@@ -20,9 +20,15 @@ CREATE TABLE IF NOT EXISTS docs (
     type           TEXT    NOT NULL DEFAULT 'general',
     created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     metadata       TEXT    NOT NULL DEFAULT '{}',
-    author         TEXT GENERATED ALWAYS AS (json_extract(metadata, '$.author')) VIRTUAL,
-    role_tags      TEXT GENERATED ALWAYS AS (json_extract(metadata, '$.role_tags')) VIRTUAL,
-    source_version TEXT GENERATED ALWAYS AS (json_extract(metadata, '$.source_version')) VIRTUAL
+    author         TEXT    GENERATED ALWAYS AS (json_extract(metadata, '$.author')) VIRTUAL,
+    role_tags      TEXT    GENERATED ALWAYS AS (json_extract(metadata, '$.role_tags')) VIRTUAL,
+    source_version TEXT    GENERATED ALWAYS AS (json_extract(metadata, '$.source_version')) VIRTUAL,
+    -- ranking/curation signals (Stage 1): numeric priority, topic facet,
+    -- authoritative flag, and the id of a doc this one supersedes.
+    priority       REAL    GENERATED ALWAYS AS (json_extract(metadata, '$.priority')) VIRTUAL,
+    topic          TEXT    GENERATED ALWAYS AS (json_extract(metadata, '$.topic')) VIRTUAL,
+    pinned         INTEGER GENERATED ALWAYS AS (json_extract(metadata, '$.pinned')) VIRTUAL,
+    supersedes     INTEGER GENERATED ALWAYS AS (json_extract(metadata, '$.supersedes')) VIRTUAL
 );
 -- Indexes on author/role_tags/source_version are created by
 -- migrateMetadataColumns below, not here: on a docs table that predates these
@@ -46,6 +52,20 @@ CREATE TABLE IF NOT EXISTS docs_vec (
     dim       INTEGER NOT NULL,
     embedding BLOB    NOT NULL
 );
+
+-- edges is the knowledge-connectivity graph (L1/L2). Stage 1 populates
+-- kind='knn' edges deterministically from vector cosine similarity; the L2
+-- digester (later) adds typed edges (supersedes/contradicts/...). No cross-row
+-- FK: edges are a regenerable projection of docs, rebuilt not integrity-enforced.
+CREATE TABLE IF NOT EXISTS edges (
+    src    INTEGER NOT NULL,
+    dst    INTEGER NOT NULL,
+    weight REAL    NOT NULL DEFAULT 0,
+    kind   TEXT    NOT NULL DEFAULT 'knn',
+    PRIMARY KEY (src, dst, kind)
+);
+CREATE INDEX IF NOT EXISTS edges_src_idx ON edges(src, kind);
+CREATE INDEX IF NOT EXISTS edges_dst_idx ON edges(dst, kind);
 
 CREATE TRIGGER IF NOT EXISTS docs_fts_ai AFTER INSERT ON docs BEGIN
     INSERT INTO docs_fts(rowid, title, content)
@@ -88,10 +108,14 @@ func Open(path string) (*sql.DB, error) {
 // CREATE TABLE IF NOT EXISTS is a no-op against an already-existing docs
 // table, so a store created before these columns existed needs them added
 // via ALTER TABLE instead.
-var metadataGeneratedColumns = []struct{ name, expr string }{
-	{"author", "json_extract(metadata, '$.author')"},
-	{"role_tags", "json_extract(metadata, '$.role_tags')"},
-	{"source_version", "json_extract(metadata, '$.source_version')"},
+var metadataGeneratedColumns = []struct{ name, expr, sqltype string }{
+	{"author", "json_extract(metadata, '$.author')", "TEXT"},
+	{"role_tags", "json_extract(metadata, '$.role_tags')", "TEXT"},
+	{"source_version", "json_extract(metadata, '$.source_version')", "TEXT"},
+	{"priority", "json_extract(metadata, '$.priority')", "REAL"},
+	{"topic", "json_extract(metadata, '$.topic')", "TEXT"},
+	{"pinned", "json_extract(metadata, '$.pinned')", "INTEGER"},
+	{"supersedes", "json_extract(metadata, '$.supersedes')", "INTEGER"},
 }
 
 func migrateMetadataColumns(db *sql.DB) error {
@@ -123,7 +147,7 @@ func migrateMetadataColumns(db *sql.DB) error {
 	for _, c := range metadataGeneratedColumns {
 		if !existing[c.name] {
 			if _, err = db.Exec(
-				`ALTER TABLE docs ADD COLUMN ` + c.name + ` TEXT GENERATED ALWAYS AS (` + c.expr + `) VIRTUAL`,
+				`ALTER TABLE docs ADD COLUMN ` + c.name + ` ` + c.sqltype + ` GENERATED ALWAYS AS (` + c.expr + `) VIRTUAL`,
 			); err != nil {
 				return err
 			}
