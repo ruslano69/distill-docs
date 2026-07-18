@@ -120,6 +120,26 @@ Confirms the knowledge base isn't empty before relying on search results.
 
 ---
 
+## Phase 5 — Knowledge graph (optional, needs a local LLM)
+
+Once a base has vectors and enough related docs, build the **L2 typed graph** so
+you can ask *how* documents relate, not just which are similar:
+
+```bash
+# Classify near-neighbor pairs into typed relations (supersedes/elaborates/...).
+# Incremental & resumable — re-running only re-asks docs whose content changed.
+distill digest --model gemma4:12b
+
+# Read one doc's typed relations as chains (structure, not prose).
+distill graph DOC-7 --json
+```
+
+Use this to surface supersession ("is this note obsoleted by a newer one?") and
+contradictions before trusting a search hit. Edges are `proposed` until
+confirmed. `distilld` runs the same pass continuously as a daemon.
+
+---
+
 ## Golden Rule
 
 ```

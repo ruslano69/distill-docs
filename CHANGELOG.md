@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased — Stage 1 (ranking + L1 graph)
+## v0.3.0 — Stage 2 (L2 typed knowledge graph)
+
+Turn the anonymous L1 geometry into *knowledge*: a local LLM classifies which
+near-neighbor pairs are actually related, and how. "Doc 42 is near doc 12"
+becomes "SPEC-42 supersedes SPEC-12" — a typed, weighted, provenance-stamped
+edge you can rank and reason over.
+
+- **`internal/digest` — the L2 digester.** A tight relation taxonomy (~6, the
+  Episteme lesson — not 201): `supersedes`, `contradicts`, `elaborates`,
+  `depends_on`, `duplicates`, `same_topic`, plus first-class `none`.
+  `Classify(a,b)` runs a temperature-0 JSON prompt and returns a validated kind,
+  direction, clamped confidence, and one-line rationale. A pass draws candidates
+  **only from the kNN geometry** (O(n·k) LLM calls, not O(n²)), collapses them to
+  undirected pairs, and is **incremental and resumable**: a per-pair content
+  fingerprint in `digest_state` means unchanged pairs are skipped, edited docs
+  re-dirty their pairs, and transient LLM failures retry next pass. Edges land as
+  `proposed` (policy/human confirms the irreversible ones); stale relations are
+  cleared on re-digest.
+- **`internal/llm`** — provider-agnostic Ollama `/api/generate` JSON client,
+  disabled-when-unconfigured like `internal/embed`.
+- **Edge provenance** — `edges` gains `status`/`rationale`/`model`/`updated_at`
+  (migration backfills old tables); `weight` carries LLM confidence.
+- **`distill digest --model <ollama>`** — one-shot pass (build kNN, classify,
+  report per-kind tally). **`distill graph <SLUG>`** — graph-response view: a
+  doc's typed relations as chains (`→ supersedes → SPEC-1 [proposed, conf 0.88]`),
+  text or `--json`. **`distilld`** — background daemon looping the digester on an
+  interval with graceful shutdown, sharing the engine with `distill digest`.
+
+## v0.2.0 — Stage 1 (ranking + L1 graph)
 
 The knowledge-layer foundation: turn retrieval into a re-scorable, filterable
 index with a deterministic connectivity graph — the substrate the L2 digester
