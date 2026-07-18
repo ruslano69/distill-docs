@@ -226,6 +226,82 @@ With neither `--embed-model` nor `--embedding`, `add` stores FTS-only and
 
 ---
 
+## Knowledge graph (L2 digester)
+
+Search ranks *primary information*. The **digester** turns it into *knowledge*:
+it asks a local LLM which near-neighbor documents are actually related, and how,
+recording each as a typed, weighted, provenance-stamped edge.
+
+It works in two layers over the same SQLite file:
+
+- **L1 (geometry, deterministic)** — `distill digest` first (re)builds the
+  cosine-kNN graph from stored vectors. Free, no LLM. This bounds the LLM to
+  plausible pairs (each doc's nearest neighbors), so a pass is O(n·k), not O(n²).
+- **L2 (typed, LLM)** — for each candidate pair the model classifies the relation
+  into a tight taxonomy and the edge is written as `proposed`:
+
+  | kind | meaning |
+  |------|---------|
+  | `supersedes`  | subject makes object obsolete (directed; review before trusting) |
+  | `contradicts` | the two make conflicting claims |
+  | `elaborates`  | subject adds detail/depth to object |
+  | `depends_on`  | subject requires object to hold |
+  | `duplicates`  | subject restates object |
+  | `same_topic`  | same subject, no stronger relation |
+
+### digest
+
+```bash
+# Needs vectors already stored (ingest with --embed-model) and a generate model.
+distill digest --model gemma4:12b
+# digest: 463 candidates, 0 skipped (clean), 6 classified, 6 edges written
+#   elaborates   3
+#   same_topic   3
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--model` | *(required)* | Ollama generate model for classification (e.g. `gemma4:12b`) |
+| `--llm-url` | `http://localhost:11434/api/generate` | generate endpoint |
+| `--k` | `5` | neighbors per doc considered as candidates |
+| `--min-confidence` | `0.5` | drop proposed edges below this confidence |
+| `--limit` | `0` | stop after classifying this many pairs (0 = all) |
+| `--rebuild-knn` | `true` | rebuild the kNN geometry before digesting |
+
+A pass is **incremental and resumable**: each classified pair is stamped with a
+content fingerprint, so re-running skips unchanged pairs (edit a doc and only its
+pairs are re-asked). Transient LLM failures stay unstamped and retry next pass.
+
+### graph
+
+Render one doc's typed relations as chains — structure instead of prose:
+
+```bash
+distill graph DOC-7
+# DOC-7  Architecture (roadmap)
+#   → elaborates   → DOC-1 distill-docs  [proposed, conf 0.95]
+#       "Document B provides a detailed architectural breakdown ..."
+
+distill graph DOC-7 --json   # {"slug":"DOC-7","relations":[...]}
+```
+
+### distilld (daemon)
+
+`distilld` loops the same digester on an interval, keeping the graph warm as
+documents change (steady-state passes are near-free — only dirty pairs cost an
+LLM call):
+
+```bash
+distilld --db .knowledge/docs.sqlite --model gemma4:12b --interval 5m
+distilld --model gemma4:12b --interval 0   # one pass, then exit (= distill digest)
+```
+
+Edges are **proposed**, not law: the LLM suggests, and confirming the
+irreversible ones (`supersedes`) is left to policy/human review (the `status`
+column). Run `distill eval` after a digest to confirm retrieval didn't regress.
+
+---
+
 ## Quick reference
 
 ```bash
@@ -246,6 +322,12 @@ distill add --url https://pkg.go.dev/net/http --max-pages 200
 
 # Search (defaults to hybrid)
 distill search --query "your question" --limit 5
+
+# Build the L2 typed knowledge graph (needs vectors + a generate model)
+distill digest --model gemma4:12b
+
+# Inspect one doc's typed relations
+distill graph DOC-7
 
 # Check size
 distill count

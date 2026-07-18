@@ -18,7 +18,7 @@ public `analyze` API for code-ingest.
 |--------|------|
 | `distill` | Knowledge-base CLI: FTS5 + vector hybrid search, file/PDF/web ingest, auto-embedding via Ollama |
 | `distill-server` | Versioned truth server: immutable releases + channels, provenance, MCP + TCP/HTTP read-servers, funcfinder code-ingest |
-| `distilld` | *(planned)* background digester — LLM-built knowledge-connectivity graph |
+| `distilld` | Background digester daemon — LLM-built typed knowledge graph (also `distill digest` one-shot) |
 
 ## Build
 
@@ -48,11 +48,14 @@ Three layers over one corpus:
 - **L0 — primary information**: raw docs + JSON derivatives. Immutable, append-only.
 - **L1 — deterministic index** (synchronous, no LLM): vectors, time, tags, hashes,
   cosine-kNN edges. Pure math.
-- **L2 — knowledge graph** (async, LLM `distilld`): typed weighted edges —
-  *supersedes / contradicts / elaborates / same-topic* — with provenance.
+- **L2 — knowledge graph** (async, LLM `distilld` / `distill digest`): typed
+  weighted edges — *supersedes / contradicts / elaborates / depends_on /
+  duplicates / same_topic* — with confidence, rationale, and model provenance.
+  Proposed by the LLM, confirmed by policy/human. `distill graph <SLUG>` reads it.
 
 Query-time ranking (recency, priority, role/topic) sits on top. See
-[`docs/distill-server/`](docs/distill-server/) for the truth-server spec.
+[`docs/DISTILL.md`](docs/DISTILL.md#knowledge-graph-l2-digester) for the digester
+and [`docs/distill-server/`](docs/distill-server/) for the truth-server spec.
 
 ## License
 
