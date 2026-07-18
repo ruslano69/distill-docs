@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — session transcript ingest
+
+- **`distill add --session <transcript.jsonl>`** — ingest a Claude Code session
+  transcript as durable, queryable memory. Each turn becomes one or more docs
+  (long turns chunked), typed by **role** (`user`/`assistant`/`thinking`) so a
+  single conversation yields three separable *slices of knowledge*: search only
+  answers (`--filter-type assistant`), isolate reasoning (`--filter-type
+  thinking`), or drop thinking entirely. `tool_use`/`tool_result` blocks and the
+  opaque base64 thinking `signature` are excluded (actions/crypto, not content).
+- **Historical timestamps** — new `knowledge.AddAt` inserts with an explicit
+  `created_at`, so each turn's doc carries its **real** conversation time, not
+  import time; recency ranking and chronology stay honest. Provenance (uuid, git
+  branch, model) is stored in metadata; the branch doubles as a `topic` facet.
+- `internal/knowledge/session.go` — transcript parser (`ParseSession`,
+  polymorphic string/blocks content), per-turn chunking, and metadata rendering.
+
 ## v0.3.0 — Stage 2 (L2 typed knowledge graph)
 
 Turn the anonymous L1 geometry into *knowledge*: a local LLM classifies which

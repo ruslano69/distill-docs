@@ -6,18 +6,35 @@ import (
 )
 
 // Add inserts a document and optionally its embedding into the knowledge base.
-// Returns the new document ID.
+// created_at defaults to now. Returns the new document ID.
 func Add(db *sql.DB, title, content, docType, metadata string, embedding []float32) (int64, error) {
+	return AddAt(db, title, content, docType, metadata, embedding, 0)
+}
+
+// AddAt is Add with an explicit created_at (unix seconds) — used when ingesting
+// historical material whose real time must be preserved (e.g. a session
+// transcript), so recency ranking and chronology reflect when each entry was
+// actually written, not when it was imported. A createdAt of 0 falls back to
+// the table default (now).
+func AddAt(db *sql.DB, title, content, docType, metadata string, embedding []float32, createdAt int64) (int64, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(
-		`INSERT INTO docs (title, content, type, metadata) VALUES (?, ?, ?, ?)`,
-		title, content, docType, metadata,
-	)
+	var res sql.Result
+	if createdAt > 0 {
+		res, err = tx.Exec(
+			`INSERT INTO docs (title, content, type, metadata, created_at) VALUES (?, ?, ?, ?, ?)`,
+			title, content, docType, metadata, createdAt,
+		)
+	} else {
+		res, err = tx.Exec(
+			`INSERT INTO docs (title, content, type, metadata) VALUES (?, ?, ?, ?)`,
+			title, content, docType, metadata,
+		)
+	}
 	if err != nil {
 		return 0, err
 	}

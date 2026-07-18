@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ruslano69/distill-docs/internal/digest"
 	"github.com/ruslano69/distill-docs/internal/embed"
@@ -305,6 +307,7 @@ func runAdd(dbPath string, args []string) {
 	title := fs.String("title", "", "document title (required without --file)")
 	content := fs.String("content", "", "document content (required without --file)")
 	file := fs.String("file", "", "ingest a .txt/.md/.pdf file (splits into chunks)")
+	session := fs.String("session", "", "ingest a Claude Code transcript .jsonl (per-turn, historical timestamps)")
 	urlFlag := fs.String("url", "", "crawl a documentation website and ingest all pages")
 	maxPages := fs.Int("max-pages", 200, "max pages to crawl (with --url)")
 	chunkSize := fs.Int("chunk-size", 800, "max chunk size in runes (with --file)")
@@ -401,6 +404,11 @@ func runAdd(dbPath string, args []string) {
 		return
 	}
 
+	if *session != "" {
+		runAddSession(db, ec, *session, knowledge.ChunkOpts{MaxRunes: *chunkSize, OverlapRunes: *chunkOverlap}, *jsonOut)
+		return
+	}
+
 	if *title == "" || *content == "" {
 		fatalf("--title and --content are required (or use --file)")
 	}
@@ -416,6 +424,69 @@ func runAdd(dbPath string, args []string) {
 		json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id})
 	} else {
 		fmt.Fprintf(os.Stderr, "added id=%d\n", id)
+	}
+}
+
+// runAddSession ingests a Claude Code session transcript (.jsonl): each turn
+// (user prompt, assistant reply, assistant thinking) becomes one or more docs,
+// typed by role so the three "slices of knowledge" stay separable — `--type
+// thinking` isolates reasoning, `--type assistant` the answers. Crucially it
+// preserves each turn's real timestamp (AddAt), so recency ranking and
+// chronology reflect when things were actually said, not import time.
+func runAddSession(db *sql.DB, ec *embed.Client, path string, opts knowledge.ChunkOpts, jsonOut bool) {
+	turns, err := knowledge.ParseSession(path)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	chunks := knowledge.ChunkSessionTurns(turns, opts)
+	if len(chunks) == 0 {
+		fatalf("no conversational turns found in %s", path)
+	}
+
+	// Reuse the batched embedder: it degrades to no-vectors on failure.
+	kc := make([]knowledge.Chunk, len(chunks))
+	for i, c := range chunks {
+		kc[i] = knowledge.Chunk{Content: c.Content}
+	}
+	vecs := embedChunks(ec, kc)
+
+	byKind := map[string]int{}
+	var minTS, maxTS int64
+	ids := make([]int64, 0, len(chunks))
+	for i, c := range chunks {
+		id, err := knowledge.AddAt(db, c.Title, c.Content, c.Turn.Kind, c.Turn.Metadata(), chunkVec(vecs, i), c.Turn.Timestamp)
+		if err != nil {
+			fatalf("add turn: %v", err)
+		}
+		ids = append(ids, id)
+		byKind[c.Turn.Kind]++
+		if ts := c.Turn.Timestamp; ts > 0 {
+			if minTS == 0 || ts < minTS {
+				minTS = ts
+			}
+			if ts > maxTS {
+				maxTS = ts
+			}
+		}
+	}
+
+	if jsonOut {
+		json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"docs": len(ids), "turns": len(turns), "by_kind": byKind,
+			"from": minTS, "to": maxTS,
+		})
+		return
+	}
+	fmt.Fprintf(os.Stderr, "ingested %d docs from %d turns (%s)\n", len(ids), len(turns), filepath.Base(path))
+	for _, k := range []string{"user", "assistant", "thinking"} {
+		if n := byKind[k]; n > 0 {
+			fmt.Fprintf(os.Stderr, "  %-10s %d\n", k, n)
+		}
+	}
+	if minTS > 0 {
+		fmt.Fprintf(os.Stderr, "  span       %s → %s\n",
+			time.Unix(minTS, 0).UTC().Format("2006-01-02 15:04"),
+			time.Unix(maxTS, 0).UTC().Format("2006-01-02 15:04"))
 	}
 }
 
