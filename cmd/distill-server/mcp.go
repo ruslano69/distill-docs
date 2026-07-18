@@ -9,13 +9,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ruslano69/funcfinder/internal/codemap"
-	"github.com/ruslano69/funcfinder/internal/embed"
-	"github.com/ruslano69/funcfinder/internal/knowledge"
-	"github.com/ruslano69/funcfinder/internal/truth"
+	"github.com/ruslano69/distill-docs/internal/codemap"
+	"github.com/ruslano69/distill-docs/internal/embed"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/truth"
 )
 
-// MCP server for docsearch-server (TZ §10.1): the first-class interface for
+// MCP server for distill-server (TZ §10.1): the first-class interface for
 // LLM agents. Speaks JSON-RPC 2.0 over stdio (line-delimited), implemented by
 // hand to keep the zero-infra, minimal-dep, single-binary property. Tools are
 // split strictly along the CQRS line — readonly grounding vs rewrite feedback.
@@ -59,7 +59,7 @@ func runMCP(store *truth.Store, embc *embed.Client, args []string) {
 	m := &mcpServer{store: store, embc: embc, out: json.NewEncoder(os.Stdout)}
 	// Progress/diagnostics go to stderr so they never corrupt the JSON-RPC
 	// stream on stdout.
-	fmt.Fprintln(os.Stderr, "docsearch-server MCP on stdio (protocol "+mcpProtocolVersion+")")
+	fmt.Fprintln(os.Stderr, "distill-server MCP on stdio (protocol "+mcpProtocolVersion+")")
 
 	r := bufio.NewReader(os.Stdin)
 	for {
@@ -97,7 +97,7 @@ func (m *mcpServer) dispatch(line string) {
 		m.reply(req.ID, map[string]any{
 			"protocolVersion": mcpProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "docsearch-server", "version": "0.1"},
+			"serverInfo":      map[string]any{"name": "distill-server", "version": "0.1"},
 		})
 	case "notifications/initialized", "notifications/cancelled":
 		// notifications carry no id and expect no response

@@ -226,7 +226,7 @@ type Match struct {
 }
 
 // Enumerate is the completeness-audit primitive from
-// docs/docsearch-server/HOW_TO_USE.md step 4: "did I miss a category" —
+// docs/distill-server/HOW_TO_USE.md step 4: "did I miss a category" —
 // distinct from SearchRegex, which returns whole matching *documents*.
 // Enumerate extracts every distinct substring the pattern matches across the
 // whole corpus (title+content) and tallies it, so a question like "which

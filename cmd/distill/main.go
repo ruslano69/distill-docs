@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ruslano69/funcfinder/internal"
-	"github.com/ruslano69/funcfinder/internal/embed"
-	"github.com/ruslano69/funcfinder/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/version"
+	"github.com/ruslano69/distill-docs/internal/embed"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
 )
 
 func main() {
@@ -22,14 +22,14 @@ func main() {
 	}
 
 	// Global --db flag before the action.
-	globalFS := flag.NewFlagSet("docsearch", flag.ContinueOnError)
+	globalFS := flag.NewFlagSet("distill", flag.ContinueOnError)
 	dbPath := globalFS.String("db", ".knowledge/docs.sqlite", "path to SQLite knowledge base")
 	globalFS.Usage = printUsage
 
 	// Handle --version before action parsing.
 	for _, a := range os.Args[1:] {
 		if a == "--version" || a == "-version" {
-			internal.PrintVersion("docsearch")
+			version.PrintVersion("distill")
 			return
 		}
 	}
@@ -384,7 +384,7 @@ func printResults(results []knowledge.Result, asJSON bool) {
 }
 
 func printUsage() {
-	fmt.Fprint(os.Stderr, `docsearch — knowledge base with FTS5 + vector hybrid search
+	fmt.Fprint(os.Stderr, `distill — knowledge base with FTS5 + vector hybrid search
 
 Actions:
   init    Create or verify the knowledge base
@@ -393,12 +393,12 @@ Actions:
   count   Print total document count
 
 Usage:
-  docsearch [--db <path>] init
-  docsearch [--db <path>] add    --title <t> --content <c> [--type <t>] [--meta <json>] [--embedding <floats> | --embed-model <m>] [--json]
-  docsearch [--db <path>] add    --file <path.txt|md|pdf>  [--type <t>] [--chunk-size N] [--chunk-overlap N] [--embed-model <m>] [--json]
-  docsearch [--db <path>] add    --url  <https://...>      [--type <t>] [--chunk-size N] [--max-pages N] [--embed-model <m>] [--json]
-  docsearch [--db <path>] search --query <q>               [--embedding <floats> | --embed-model <m>] [--mode fts|vec|hybrid] [--metric cosine|l2] [--filter-type <type>] [--limit N] [--json]
-  docsearch [--db <path>] count  [--json]
+  distill [--db <path>] init
+  distill [--db <path>] add    --title <t> --content <c> [--type <t>] [--meta <json>] [--embedding <floats> | --embed-model <m>] [--json]
+  distill [--db <path>] add    --file <path.txt|md|pdf>  [--type <t>] [--chunk-size N] [--chunk-overlap N] [--embed-model <m>] [--json]
+  distill [--db <path>] add    --url  <https://...>      [--type <t>] [--chunk-size N] [--max-pages N] [--embed-model <m>] [--json]
+  distill [--db <path>] search --query <q>               [--embedding <floats> | --embed-model <m>] [--mode fts|vec|hybrid] [--metric cosine|l2] [--filter-type <type>] [--limit N] [--json]
+  distill [--db <path>] count  [--json]
 
 Default --db: .knowledge/docs.sqlite
 Embedding format: comma-separated float32 values, e.g. "0.1,0.2,0.3" or "[0.1,0.2,0.3]"

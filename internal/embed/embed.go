@@ -1,5 +1,5 @@
 // Package embed is an optional, provider-agnostic embedding client for
-// docsearch-server. The server stays BYO-embeddings by design (TZ §7.2) — it
+// distill-server. The server stays BYO-embeddings by design (TZ §7.2) — it
 // stores and compares vectors but does not compute them. This package is the
 // convenience bridge: point it at any Ollama-compatible /api/embed endpoint
 // (url + model) and it turns text into vectors at ingest and query time.

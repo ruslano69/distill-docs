@@ -1,0 +1,13 @@
+# binaries
+distill
+distill-server
+distilld
+*.exe
+dist/
+# knowledge bases / scratch
+.knowledge/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+# coverage
+coverage.txt

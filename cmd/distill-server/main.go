@@ -1,5 +1,5 @@
-// docsearch-server — the release-aware truth server CLI (see
-// docs/docsearch-server/TZ.md). This is the thin human/CI wrapper over the
+// distill-server — the release-aware truth server CLI (see
+// docs/distill-server/TZ.md). This is the thin human/CI wrapper over the
 // truth backbone (internal/truth) and the knowledge layer (internal/knowledge),
 // split strictly along the CQRS line:
 //
@@ -20,11 +20,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ruslano69/funcfinder/internal"
-	"github.com/ruslano69/funcfinder/internal/codemap"
-	"github.com/ruslano69/funcfinder/internal/embed"
-	"github.com/ruslano69/funcfinder/internal/knowledge"
-	"github.com/ruslano69/funcfinder/internal/truth"
+	"github.com/ruslano69/distill-docs/internal/version"
+	"github.com/ruslano69/distill-docs/internal/codemap"
+	"github.com/ruslano69/distill-docs/internal/embed"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/truth"
 )
 
 func main() {
@@ -34,15 +34,15 @@ func main() {
 	}
 	for _, a := range os.Args[1:] {
 		if a == "--version" || a == "-version" {
-			internal.PrintVersion("docsearch-server")
+			version.PrintVersion("distill-server")
 			return
 		}
 	}
 
 	// Global --root before the action; everything after the action is parsed
-	// by that action's own flag set (same convention as cmd/docsearch).
-	globalFS := flag.NewFlagSet("docsearch-server", flag.ContinueOnError)
-	root := globalFS.String("root", ".docsearch", "data root (control DB, write-log, releases)")
+	// by that action's own flag set (same convention as cmd/distill).
+	globalFS := flag.NewFlagSet("distill-server", flag.ContinueOnError)
+	root := globalFS.String("root", ".distill", "data root (control DB, write-log, releases)")
 	embedModel := globalFS.String("embed-model", "", "Ollama-compatible embedding model; enables vector search (e.g. qwen3-embedding:0.6b). Empty = pure BYO/FTS")
 	embedURL := globalFS.String("embed-url", embed.DefaultURL, "embedding endpoint URL")
 	globalFS.Usage = printUsage
@@ -580,7 +580,7 @@ func runSuggest(s *truth.Store, args []string) {
 }
 
 // runRead is the "read the full page/chunk range" primitive from
-// docs/docsearch-server/HOW_TO_USE.md step 5: a search snippet tells you
+// docs/distill-server/HOW_TO_USE.md step 5: a search snippet tells you
 // *where* to look; this is how you actually read it, instead of answering
 // from one truncated chunk. Two modes:
 //
@@ -640,7 +640,7 @@ func runRead(s *truth.Store, args []string) {
 }
 
 // runEnumerate is the completeness-audit primitive from
-// docs/docsearch-server/HOW_TO_USE.md step 4: "did I find every X, not just
+// docs/distill-server/HOW_TO_USE.md step 4: "did I find every X, not just
 // the first one" — e.g. every PB_Cipher_* constant actually used in the
 // corpus, not just the ones a guess list happened to include. Distinct from
 // `search --mode regex`, which returns whole matching *documents*; this
@@ -834,7 +834,7 @@ func parseEmbedding(raw string) []float32 {
 }
 
 func printUsage() {
-	fmt.Fprint(os.Stderr, `docsearch-server — versioned truth server for teams (see docs/docsearch-server/TZ.md)
+	fmt.Fprint(os.Stderr, `distill-server — versioned truth server for teams (see docs/distill-server/TZ.md)
 
 Rewrite (truth flows in):
   ingest      --title/--content or --file (.txt/.md/.pdf chunked, or .json structured changelog/task/decision records — FR-2) [--type --role-tags --author --source-version --strip-runes]
@@ -847,7 +847,7 @@ Rewrite (truth flows in):
 Readonly (grounding):
   search      --query <q> [--channel stable|testing|unstable|<ver>] [--mode --embedding --limit]
   suggest     --prefix <p> [--channel <c> --relative-to <type> --numbers --limit N]   (FTS vocabulary + IDF; pure-digit tokens filtered unless --numbers)
-  read        --id <n> [--context K] | --source <tag> [--channel <c>]   (read the full contiguous chunk range or whole source file — see docs/docsearch-server/HOW_TO_USE.md)
+  read        --id <n> [--context K] | --source <tag> [--channel <c>]   (read the full contiguous chunk range or whole source file — see docs/distill-server/HOW_TO_USE.md)
   enumerate   --pattern <regex> [--channel <c> --limit N]   (distinct matches across the corpus, tallied — the completeness-audit step)
   provenance  --record-id <id>   (who produced a record, when, against what)
   context     --role <tag> [--channel <c> --limit N]   (role-scoped view of the same corpus — FR-9)
@@ -859,7 +859,7 @@ Readonly (grounding):
   channels    [--json]
 
 Global:
-  --root <dir>          data root (default .docsearch)
+  --root <dir>          data root (default .distill)
   --embed-model <m>     Ollama-compatible embedding model to enable vector search (e.g. qwen3-embedding:0.6b)
   --embed-url <url>     embedding endpoint (default http://localhost:11434/api/embed)
   --version

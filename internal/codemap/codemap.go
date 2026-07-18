@@ -1,6 +1,6 @@
 // Package codemap implements TZ FR-22 ("funcfinder as a code → truth
 // compiler"): baking a deterministic structural map of a source tree
-// (functions and types per file) into a docsearch-server release at publish
+// (functions and types per file) into a distill-server release at publish
 // time. "Where is X defined" is then answered by an exact, versioned index
 // instead of an approximate vector search over source blobs — funcfinder
 // gives the skeleton (structure), not the semantics ("why"); that half of
@@ -57,7 +57,7 @@ type meta struct {
 // Ingest walks codeDir with funcfinder's own analysis core (all 15
 // supported languages, auto-detected per file, respecting .gitignore) and
 // writes one compact function/type map document per source file to db (a
-// docsearch-server write-log), replacing any code_map documents from a
+// distill-server write-log), replacing any code_map documents from a
 // previous Ingest call first — the code map is a regenerated build
 // artifact, not something that should accumulate stale copies release over
 // release. Each document's metadata.source_version is codeDir's git commit

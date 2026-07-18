@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ruslano69/funcfinder/internal/embed"
-	"github.com/ruslano69/funcfinder/internal/knowledge"
-	"github.com/ruslano69/funcfinder/internal/truth"
+	"github.com/ruslano69/distill-docs/internal/embed"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/truth"
 )
 
 // newTestReadServer stands up a store with one published release pointed at by

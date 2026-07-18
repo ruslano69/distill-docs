@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ruslano69/funcfinder/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
 )
 
 // seedWriteLog adds documents to the store's live write-log via the real

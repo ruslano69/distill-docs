@@ -1,5 +1,5 @@
-// Package truth implements the release/channel backbone of docsearch-server
-// (see docs/docsearch-server/TZ.md §7.1, §7.3, §8).
+// Package truth implements the release/channel backbone of distill-server
+// (see docs/distill-server/TZ.md §7.1, §7.3, §8).
 //
 // It realizes the CQRS split at the storage layer: a single mutable *write-log*
 // knowledge DB where truth flows in, and immutable, named *release* files
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS provenance (
 );
 `
 
-// Store is a docsearch-server data root: one control DB, one live write-log
+// Store is a distill-server data root: one control DB, one live write-log
 // knowledge DB, and a releases/ directory of immutable snapshots.
 type Store struct {
 	root    string

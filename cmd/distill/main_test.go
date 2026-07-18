@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ruslano69/funcfinder/internal/embed"
-	"github.com/ruslano69/funcfinder/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/embed"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
 )
 
 // fakeEmbedServer serves the Ollama /api/embed wire format, returning one

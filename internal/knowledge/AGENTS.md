@@ -7,7 +7,7 @@ Persistent knowledge base backed by a single SQLite file. Combines FTS5 (BM25 ke
 ## Ownership
 
 - All database logic, schema, and search algorithms live here.
-- `cmd/docsearch/` is the only consumer; it must not duplicate business logic.
+- `cmd/distill/` is the only consumer; it must not duplicate business logic.
 - Embeddings are stored as raw little-endian float32 BLOBs; cosine similarity is computed in Go (no native extension required).
 
 ## Local Contracts

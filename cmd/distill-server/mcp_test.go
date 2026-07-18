@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ruslano69/funcfinder/internal/embed"
-	"github.com/ruslano69/funcfinder/internal/truth"
+	"github.com/ruslano69/distill-docs/internal/embed"
+	"github.com/ruslano69/distill-docs/internal/truth"
 )
 
 // runSession pipes JSON-RPC request lines through the dispatcher and returns

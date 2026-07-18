@@ -1,6 +1,6 @@
 # How to search — the path to success, not blind search
 
-`docsearch-server` gives you three primitives (`suggest`, `search`, raw content
+`distill-server` gives you three primitives (`suggest`, `search`, raw content
 by id) and BM25 ranking. None of that guarantees a good answer by itself — a
 single `search` call against a guessed query string is blind search: it might
 hit, might hit noise, might miss the term entirely. This document is the
@@ -8,7 +8,7 @@ methodology that turns those primitives into a reliable path to the right
 answer, distilled from live sessions against a 1800-page corpus (the PureBasic
 manual, 3740 chunks) and a 33-file project-memory corpus.
 
-Written for **agents driving docsearch-server** (via CLI or MCP) as much as for
+Written for **agents driving distill-server** (via CLI or MCP) as much as for
 humans — it is a workflow to follow, not just background reading.
 
 ## The loop
@@ -28,8 +28,8 @@ nothing and never touches ranking. Before spending a real query, check that
 your term (or a plausible stem of it) actually exists in the corpus:
 
 ```bash
-docsearch-server suggest --prefix "hash" --limit 15
-docsearch-server suggest --prefix "fingerprint" --limit 15
+distill-server suggest --prefix "hash" --limit 15
+distill-server suggest --prefix "fingerprint" --limit 15
 ```
 
 Run it for **several candidate stems at once**, not just your first guess.
@@ -50,7 +50,7 @@ Domain corpora (API manuals, codebases, internal wikis) have naming
 wrong-looking result as information, not failure:
 
 ```bash
-docsearch-server search --query "UseSHA2Fingerprint" --mode fts --limit 5
+distill-server search --query "UseSHA2Fingerprint" --mode fts --limit 5
 ```
 
 If the naming convention was right, this jumps straight past hundreds of
@@ -82,7 +82,7 @@ Once you have a real anchor (a section, a constant, a naming pattern), check
 whether you found *all* instances of the category, not just the first one:
 
 ```bash
-docsearch-server enumerate --pattern 'PB_Cipher_[A-Za-z0-9]+'
+distill-server enumerate --pattern 'PB_Cipher_[A-Za-z0-9]+'
 ```
 
 This is the first-class version of what was originally done by hand
@@ -112,14 +112,14 @@ Once `search` gives you an anchor (a chapter number, a page number, a chunk
 id), pull the **contiguous id range** around it and read it whole:
 
 ```bash
-docsearch-server read --id <n> --context 3
+distill-server read --id <n> --context 3
 ```
 
 or, to reconstruct one ingested source file completely, by its `source_version`
 provenance tag:
 
 ```bash
-docsearch-server read --source "manual.pdf"
+distill-server read --source "manual.pdf"
 ```
 
 (`read` is a first-class CLI/MCP primitive — see below; it used to require a
@@ -149,7 +149,7 @@ happens on the full text, never on fragments.**
   entire ingested source file by its `source_version` provenance tag, in id
   order — bypassing FTS entirely. Implemented in
   `internal/knowledge/read.go` (`ReadRange`, `ReadBySource`), wired into the
-  CLI in `cmd/docsearch-server/main.go`. This used to require a throwaway SQL
+  CLI in `cmd/distill-server/main.go`. This used to require a throwaway SQL
   script every time; it doesn't anymore.
 - **`enumerate --pattern <regex>`**: step 4's primitive. Returns every
   distinct regex match across the whole corpus (title+content), tallied by
@@ -163,5 +163,5 @@ happens on the full text, never on fragments.**
 Both `read` and `enumerate` were found missing by *doing* the workflow above
 without them (a throwaway Go script, a raw grep) — the gap only became visible
 by hitting it, which is itself worth remembering: if you catch yourself
-reaching for ad-hoc SQL or shell plumbing around `docsearch-server`, that's a
+reaching for ad-hoc SQL or shell plumbing around `distill-server`, that's a
 signal a primitive is missing, not that the workflow is wrong.

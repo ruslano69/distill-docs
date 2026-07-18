@@ -17,7 +17,7 @@ import (
 type CrawlOpts struct {
 	MaxPages   int           // hard cap on pages fetched; default 200
 	Timeout    time.Duration // per-request timeout; default 10s
-	UserAgent  string        // default "docsearch-crawler/1.0"
+	UserAgent  string        // default "distill-crawler/1.0"
 	ChunkOpts  ChunkOpts
 }
 
@@ -30,7 +30,7 @@ func (o *CrawlOpts) withDefaults() CrawlOpts {
 		out.Timeout = 10 * time.Second
 	}
 	if out.UserAgent == "" {
-		out.UserAgent = "docsearch-crawler/1.0"
+		out.UserAgent = "distill-crawler/1.0"
 	}
 	out.ChunkOpts = out.ChunkOpts.withDefaults()
 	return out

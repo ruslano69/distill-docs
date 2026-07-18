@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/ruslano69/funcfinder/internal/knowledge"
-	"github.com/ruslano69/funcfinder/internal/truth"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/truth"
 )
 
 // TestMetaJSON pins the provenance blob shape that ingest/record attach to docs.

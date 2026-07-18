@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ruslano69/funcfinder/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
 )
 
 func openDB(t *testing.T) *sql.DB {
