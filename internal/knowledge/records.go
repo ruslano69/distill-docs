@@ -20,6 +20,11 @@ type Record struct {
 	RoleTags      string `json:"role_tags,omitempty"`
 	SourceVersion string `json:"source_version,omitempty"`
 	SourceRef     string `json:"source_ref,omitempty"`
+	// Stage-1 ranking/curation signals.
+	Topic      string  `json:"topic,omitempty"`
+	Priority   float64 `json:"priority,omitempty"`
+	Pinned     bool    `json:"pinned,omitempty"`
+	Supersedes int64   `json:"supersedes,omitempty"`
 }
 
 // ParseRecordsFile reads a JSON file holding either a single record object
@@ -80,11 +85,15 @@ func AddRecords(db *sql.DB, records []Record, embedFn func(text string) []float3
 		}
 
 		meta := struct {
-			Author        string `json:"author,omitempty"`
-			RoleTags      string `json:"role_tags,omitempty"`
-			SourceVersion string `json:"source_version,omitempty"`
-			SourceRef     string `json:"source_ref,omitempty"`
-		}{r.Author, r.RoleTags, r.SourceVersion, r.SourceRef}
+			Author        string  `json:"author,omitempty"`
+			RoleTags      string  `json:"role_tags,omitempty"`
+			SourceVersion string  `json:"source_version,omitempty"`
+			SourceRef     string  `json:"source_ref,omitempty"`
+			Topic         string  `json:"topic,omitempty"`
+			Priority      float64 `json:"priority,omitempty"`
+			Pinned        bool    `json:"pinned,omitempty"`
+			Supersedes    int64   `json:"supersedes,omitempty"`
+		}{r.Author, r.RoleTags, r.SourceVersion, r.SourceRef, r.Topic, r.Priority, r.Pinned, r.Supersedes}
 		metaJSON, err := json.Marshal(meta)
 		if err != nil {
 			return ids, fmt.Errorf("marshal metadata for %q: %w", r.Title, err)

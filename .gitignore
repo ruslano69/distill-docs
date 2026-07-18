@@ -1,7 +1,7 @@
-# binaries
-distill
-distill-server
-distilld
+# binaries (root-anchored so they don't match cmd/distill* source dirs)
+/distill
+/distill-server
+/distilld
 *.exe
 dist/
 # knowledge bases / scratch

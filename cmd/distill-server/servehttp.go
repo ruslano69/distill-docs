@@ -70,6 +70,22 @@ func clampLimit(raw string, def int) (int, error) {
 	return n, nil
 }
 
+// atoiDefault/atofDefault parse an optional numeric query param, falling back
+// to def on empty/invalid input (ranking knobs are best-effort, not validated).
+func atoiDefault(raw string, def int) int {
+	if n, err := strconv.Atoi(raw); err == nil {
+		return n
+	}
+	return def
+}
+
+func atofDefault(raw string, def float64) float64 {
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		return f
+	}
+	return def
+}
+
 // handleHealthz reports liveness plus which release the node is currently
 // serving — the readiness signal a load balancer or the hot-swap-aware caller
 // polls. It never touches the release DB, so it stays green even mid-swap.
@@ -117,18 +133,26 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	db := s.cur.Load().db
 	var results []knowledge.Result
 	switch mode {
-	case "fts":
-		results, err = knowledge.SearchFTS(db, query, limit, prefix)
-	case "vec":
-		if len(emb) == 0 {
+	case "fts", "vec", "hybrid":
+		if mode == "vec" && len(emb) == 0 {
 			httpError(w, http.StatusBadRequest, "vec mode needs ?embedding= (no embedder configured)")
 			return
 		}
-		results, err = knowledge.SearchVec(db, emb, limit, knowledge.MetricCosine, "")
+		results, err = knowledge.Search(db, knowledge.SearchOpts{
+			Query: query, Embedding: emb, Mode: mode, Metric: knowledge.MetricCosine,
+			Limit: limit, Prefix: prefix,
+			Filter: knowledge.Filter{Type: q.Get("type"), Role: q.Get("role"), Topic: q.Get("topic")},
+			Rank: knowledge.RankOpts{
+				RecencyWindow:     time.Duration(atoiDefault(q.Get("recency_window_hours"), 0)) * time.Hour,
+				RecencyWeight:     atofDefault(q.Get("recency_weight"), 0),
+				PriorityWeight:    atofDefault(q.Get("priority_weight"), 0),
+				PinnedBoost:       atofDefault(q.Get("pinned_boost"), 0),
+				RoleAffinity:      atofDefault(q.Get("role_affinity"), 0),
+				ExcludeSuperseded: q.Get("exclude_superseded") == "true",
+			},
+		})
 	case "regex":
-		results, err = knowledge.SearchRegex(db, query, limit, "")
-	case "hybrid":
-		results, err = knowledge.SearchHybrid(db, query, emb, limit, knowledge.MetricCosine, "", prefix)
+		results, err = knowledge.SearchRegex(db, query, limit, q.Get("type"))
 	default:
 		httpError(w, http.StatusBadRequest, "unknown mode %q (want fts|vec|hybrid|regex)", mode)
 		return
@@ -185,7 +209,7 @@ func (s *server) handleContext(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	docs, err := knowledge.ByRole(s.cur.Load().db, role, limit)
+	docs, err := knowledge.ByRoleTopic(s.cur.Load().db, role, q.Get("topic"), limit)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "context: %v", err)
 		return

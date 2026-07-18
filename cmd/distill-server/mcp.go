@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ruslano69/distill-docs/internal/codemap"
 	"github.com/ruslano69/distill-docs/internal/embed"
@@ -207,6 +208,18 @@ func argInt64(args map[string]any, key string, def int64) int64 {
 	return def
 }
 
+func argFloat(args map[string]any, key string, def float64) float64 {
+	if v, ok := args[key].(float64); ok {
+		return v
+	}
+	return def
+}
+
+func argBool(args map[string]any, key string) bool {
+	v, _ := args[key].(bool)
+	return v
+}
+
 func argFloats(args map[string]any, key string) []float32 {
 	raw, ok := args[key].([]any)
 	if !ok {
@@ -252,18 +265,25 @@ func (m *mcpServer) toolSearch(args map[string]any) (string, error) {
 	defer db.Close()
 
 	var res []knowledge.Result
-	switch mode {
-	case "fts":
-		res, err = knowledge.SearchFTS(db, query, limit, true)
-	case "vec":
-		if len(emb) == 0 {
+	if mode == "regex" {
+		res, err = knowledge.SearchRegex(db, query, limit, argStr(args, "type", ""))
+	} else {
+		if mode == "vec" && len(emb) == 0 {
 			return "", fmt.Errorf("embedding required for vec mode")
 		}
-		res, err = knowledge.SearchVec(db, emb, limit, knowledge.MetricCosine, "")
-	case "regex":
-		res, err = knowledge.SearchRegex(db, query, limit, "")
-	default:
-		res, err = knowledge.SearchHybrid(db, query, emb, limit, knowledge.MetricCosine, "", true)
+		res, err = knowledge.Search(db, knowledge.SearchOpts{
+			Query: query, Embedding: emb, Mode: mode, Metric: knowledge.MetricCosine,
+			Limit: limit, Prefix: true,
+			Filter: knowledge.Filter{Type: argStr(args, "type", ""), Role: argStr(args, "role", ""), Topic: argStr(args, "topic", "")},
+			Rank: knowledge.RankOpts{
+				RecencyWindow:     time.Duration(argFloat(args, "recency_window_hours", 0)) * time.Hour,
+				RecencyWeight:     argFloat(args, "recency_weight", 0),
+				PriorityWeight:    argFloat(args, "priority_weight", 0),
+				PinnedBoost:       argFloat(args, "pinned_boost", 0),
+				RoleAffinity:      argFloat(args, "role_affinity", 0),
+				ExcludeSuperseded: argBool(args, "exclude_superseded"),
+			},
+		})
 	}
 	if err != nil {
 		return "", err
@@ -321,7 +341,7 @@ func (m *mcpServer) toolContext(args map[string]any) (string, error) {
 	}
 	defer db.Close()
 
-	docs, err := knowledge.ByRole(db, role, limit)
+	docs, err := knowledge.ByRoleTopic(db, role, argStr(args, "topic", ""), limit)
 	if err != nil {
 		return "", err
 	}
@@ -401,8 +421,12 @@ func (m *mcpServer) toolIngest(args map[string]any) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	meta := metaJSON(argStr(args, "author", ""), argStr(args, "role_tags", ""),
-		argStr(args, "source_version", ""), "")
+	meta := metaJSON(docMeta{
+		Author: argStr(args, "author", ""), RoleTags: argStr(args, "role_tags", ""),
+		SourceVersion: argStr(args, "source_version", ""), Topic: argStr(args, "topic", ""),
+		Priority: argFloat(args, "priority", 0), Pinned: argBool(args, "pinned"),
+		Supersedes: argInt64(args, "supersedes", 0),
+	})
 	id, err := knowledge.Add(db, title, content, argStr(args, "type", "general"), meta, argFloats(args, "embedding"))
 	if err != nil {
 		return "", err
@@ -424,7 +448,9 @@ func (m *mcpServer) toolRecord(args map[string]any) (string, error) {
 	}
 	defer db.Close()
 	id, err := knowledge.Add(db, title, result, argStr(args, "type", "changelog"),
-		metaJSON(author, "", "", sourceRef), nil)
+		metaJSON(docMeta{Author: author, SourceRef: sourceRef, Topic: argStr(args, "topic", ""),
+			Priority: argFloat(args, "priority", 0), Pinned: argBool(args, "pinned"),
+			Supersedes: argInt64(args, "supersedes", 0)}), nil)
 	if err != nil {
 		return "", err
 	}

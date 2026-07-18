@@ -2,10 +2,38 @@ package knowledge
 
 import (
 	"database/sql"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
+
+// Filter scopes a search to a subset of the corpus before ranking: an exact
+// doc type, a role (whole-tag membership in role_tags), and/or a topic facet.
+// Empty fields impose no constraint. Pushed into SQL so scoping happens on the
+// candidate set, not by dropping an over-fetched pool.
+type Filter struct{ Type, Role, Topic string }
+
+// where builds the extra WHERE conditions for f over columns qualified by
+// prefix (e.g. "d." when docs is aliased, "" otherwise).
+func (f Filter) where(prefix string) (string, []any) {
+	var conds []string
+	var args []any
+	if f.Type != "" {
+		conds = append(conds, prefix+"type = ?")
+		args = append(args, f.Type)
+	}
+	if f.Topic != "" {
+		conds = append(conds, prefix+"topic = ?")
+		args = append(args, f.Topic)
+	}
+	if f.Role != "" {
+		conds = append(conds, "(',' || "+prefix+"role_tags || ',') LIKE ('%,' || ? || ',%')")
+		args = append(args, f.Role)
+	}
+	return strings.Join(conds, " AND "), args
+}
 
 // Metric selects the distance function used for vector search.
 type Metric string
@@ -97,18 +125,32 @@ const ftsSnippetTokens = 16
 // actually contains the match, so the excerpt centers on it instead of always
 // showing the start of the chunk.
 func SearchFTS(db *sql.DB, query string, limit int, prefix bool) ([]Result, error) {
+	return searchFTSFiltered(db, query, limit, prefix, Filter{})
+}
+
+// searchFTSFiltered is SearchFTS plus an optional facet Filter pushed into the
+// WHERE clause, and it loads the ranking columns (topic/priority/pinned/
+// supersedes) the Search re-scoring layer needs.
+func searchFTSFiltered(db *sql.DB, query string, limit int, prefix bool, f Filter) ([]Result, error) {
 	ftsQuery := BuildFTSQuery(query, prefix)
-	rows, err := db.Query(`
+	q := `
 		SELECT d.id, d.title, d.content, d.type, d.created_at, d.metadata,
 		       COALESCE(d.author,''), COALESCE(d.role_tags,''), COALESCE(d.source_version,''),
+		       COALESCE(d.topic,''), COALESCE(d.priority,0), COALESCE(d.pinned,0), COALESCE(d.supersedes,0),
 		       bm25(docs_fts) AS rank,
 		       snippet(docs_fts, -1, '**', '**', '...', ?) AS snip
 		FROM docs_fts
 		JOIN docs d ON docs_fts.rowid = d.id
-		WHERE docs_fts MATCH ?
-		ORDER BY rank
-		LIMIT ?
-	`, ftsSnippetTokens, ftsQuery, limit)
+		WHERE docs_fts MATCH ?`
+	args := []any{ftsSnippetTokens, ftsQuery}
+	if cond, fargs := f.where("d."); cond != "" {
+		q += " AND " + cond
+		args = append(args, fargs...)
+	}
+	q += " ORDER BY rank LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -117,13 +159,16 @@ func SearchFTS(db *sql.DB, query string, limit int, prefix bool) ([]Result, erro
 	var results []Result
 	for rows.Next() {
 		var r Result
+		var pinned int
 		if err = rows.Scan(
 			&r.ID, &r.Title, &r.Content, &r.Type, &r.CreatedAt, &r.Metadata,
 			&r.Author, &r.RoleTags, &r.SourceVersion,
+			&r.Topic, &r.Priority, &pinned, &r.Supersedes,
 			&r.FTSRank, &r.Snippet,
 		); err != nil {
 			return nil, err
 		}
+		r.Pinned = pinned != 0
 		results = append(results, r)
 	}
 	return results, rows.Err()
@@ -133,27 +178,30 @@ func SearchFTS(db *sql.DB, query string, limit int, prefix bool) ([]Result, erro
 // inside SQLite via a registered custom function — no bulk BLOB loading into Go.
 // Pass docType="" to search all types; pass a non-empty string to pre-filter.
 func SearchVec(db *sql.DB, embedding []float32, limit int, metric Metric, docType string) ([]Result, error) {
+	return searchVecFiltered(db, embedding, limit, metric, Filter{Type: docType})
+}
+
+// searchVecFiltered is SearchVec with a full facet Filter and the ranking
+// columns loaded (topic/priority/pinned/supersedes).
+func searchVecFiltered(db *sql.DB, embedding []float32, limit int, metric Metric, f Filter) ([]Result, error) {
 	blob := float32SliceToBlob(embedding)
 	fn := metric.sqlFunc()
 
-	var sb strings.Builder
-	sb.WriteString(`
-		SELECT d.id, d.title, d.content, d.type, d.created_at, d.metadata,
-		       COALESCE(d.author,''), COALESCE(d.role_tags,''), COALESCE(d.source_version,''),
-		       ` + fn + `(v.embedding, ?) AS dist
-		FROM docs d
-		JOIN docs_vec v ON v.doc_id = d.id
-	`)
-
+	q := `SELECT d.id, d.title, d.content, d.type, d.created_at, d.metadata,
+	       COALESCE(d.author,''), COALESCE(d.role_tags,''), COALESCE(d.source_version,''),
+	       COALESCE(d.topic,''), COALESCE(d.priority,0), COALESCE(d.pinned,0), COALESCE(d.supersedes,0),
+	       ` + fn + `(v.embedding, ?) AS dist
+	FROM docs d
+	JOIN docs_vec v ON v.doc_id = d.id`
 	args := []any{blob}
-	if docType != "" {
-		sb.WriteString(" WHERE d.type = ?")
-		args = append(args, docType)
+	if cond, fargs := f.where("d."); cond != "" {
+		q += " WHERE " + cond
+		args = append(args, fargs...)
 	}
-	sb.WriteString(" ORDER BY dist LIMIT ?")
+	q += " ORDER BY dist LIMIT ?"
 	args = append(args, limit)
 
-	rows, err := db.Query(sb.String(), args...)
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -162,13 +210,16 @@ func SearchVec(db *sql.DB, embedding []float32, limit int, metric Metric, docTyp
 	var results []Result
 	for rows.Next() {
 		var r Result
+		var pinned int
 		if err = rows.Scan(
 			&r.ID, &r.Title, &r.Content, &r.Type, &r.CreatedAt, &r.Metadata,
 			&r.Author, &r.RoleTags, &r.SourceVersion,
+			&r.Topic, &r.Priority, &pinned, &r.Supersedes,
 			&r.VecDist,
 		); err != nil {
 			return nil, err
 		}
+		r.Pinned = pinned != 0
 		results = append(results, r)
 	}
 	return results, rows.Err()
@@ -334,6 +385,165 @@ func SearchHybrid(db *sql.DB, query string, embedding []float32, limit int, metr
 		return results[i].HybridScore > results[j].HybridScore
 	})
 	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// RankOpts are the re-scoring signals applied over the retrieved candidate set
+// (Stage 1). All-zero (the default) leaves ordering identical to plain
+// retrieval, so callers opt into ranking rather than having it imposed.
+type RankOpts struct {
+	RecencyWindow     time.Duration      // linear window; 0 = recency off
+	RecencyWeight     float64            // weight on the recency term
+	PriorityWeight    float64            // weight on the numeric priority attribute
+	TypePriority      map[string]float64 // additive per-type boost
+	PinnedBoost       float64            // additive boost when a doc is pinned
+	RoleAffinity      float64            // additive boost when role_tags ∋ Filter.Role
+	ExcludeSuperseded bool               // drop docs another doc supersedes
+}
+
+// term is the multiplicative boost Σ folded onto one result's base score.
+func (rk RankOpts) term(r Result, role string, now int64) float64 {
+	var t float64
+	if rk.RecencyWindow > 0 && rk.RecencyWeight != 0 {
+		// linear window: full weight at age 0, zero at/after the window.
+		w := 1 - float64(now-r.CreatedAt)/rk.RecencyWindow.Seconds()
+		if w < 0 {
+			w = 0
+		} else if w > 1 {
+			w = 1
+		}
+		t += rk.RecencyWeight * w
+	}
+	if rk.PriorityWeight != 0 {
+		t += rk.PriorityWeight * r.Priority
+	}
+	if b, ok := rk.TypePriority[r.Type]; ok {
+		t += b
+	}
+	if rk.PinnedBoost != 0 && r.Pinned {
+		t += rk.PinnedBoost
+	}
+	if rk.RoleAffinity != 0 && role != "" && strings.Contains(","+r.RoleTags+",", ","+role+",") {
+		t += rk.RoleAffinity
+	}
+	return t
+}
+
+// SearchOpts configures the unified Search entry point.
+type SearchOpts struct {
+	Query     string
+	Embedding []float32
+	Mode      string // "fts" | "vec" | "hybrid" (default "hybrid")
+	Metric    Metric
+	Limit     int
+	Prefix    bool
+	Filter    Filter
+	Rank      RankOpts
+	Now       int64 // 0 => time.Now().Unix(); injectable for deterministic tests
+}
+
+// Search is the unified re-scoring entry point (Stage 1). It retrieves a
+// candidate pool via the FTS/vector primitives (scoped by Filter), fuses
+// multi-arm results with position-based RRF, drops superseded docs, then folds
+// the recency/priority/type/pinned/role signals onto each candidate's base
+// score. A zero RankOpts leaves the order identical to plain retrieval.
+func Search(db *sql.DB, o SearchOpts) ([]Result, error) {
+	const rrfK = 60
+	limit := o.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	fetch := limit * 5 // over-fetch so re-ranking has room to reorder
+	if fetch < 50 {
+		fetch = 50
+	}
+	now := o.Now
+	if now == 0 {
+		now = time.Now().Unix()
+	}
+
+	base := map[int64]float64{}
+	byID := map[int64]Result{}
+	addArm := func(rs []Result) {
+		for i, r := range rs {
+			base[r.ID] += 1.0 / float64(rrfK+i+1)
+			if _, ok := byID[r.ID]; !ok {
+				byID[r.ID] = r
+			}
+		}
+	}
+
+	mode := o.Mode
+	if mode == "" {
+		mode = "hybrid"
+	}
+	switch mode {
+	case "fts":
+		rs, err := searchFTSFiltered(db, o.Query, fetch, o.Prefix, o.Filter)
+		if err != nil {
+			return nil, err
+		}
+		addArm(rs)
+	case "vec":
+		if len(o.Embedding) == 0 {
+			return nil, fmt.Errorf("vec mode requires an embedding")
+		}
+		rs, err := searchVecFiltered(db, o.Embedding, fetch, o.Metric, o.Filter)
+		if err != nil {
+			return nil, err
+		}
+		addArm(rs)
+	default: // hybrid
+		if o.Query != "" {
+			rs, err := searchFTSFiltered(db, o.Query, fetch, o.Prefix, o.Filter)
+			if err != nil {
+				return nil, err
+			}
+			addArm(rs)
+		}
+		if len(o.Embedding) > 0 {
+			rs, err := searchVecFiltered(db, o.Embedding, fetch, o.Metric, o.Filter)
+			if err != nil {
+				return nil, err
+			}
+			addArm(rs)
+		}
+	}
+
+	var superseded map[int64]bool
+	if o.Rank.ExcludeSuperseded {
+		superseded = map[int64]bool{}
+		rows, err := db.Query(`SELECT supersedes FROM docs WHERE supersedes IS NOT NULL AND supersedes != 0`)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			superseded[id] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	results := make([]Result, 0, len(base))
+	for id, b := range base {
+		if superseded[id] {
+			continue
+		}
+		r := byID[id]
+		r.Score = b * (1 + o.Rank.term(r, o.Filter.Role, now))
+		results = append(results, r)
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	if len(results) > limit {
 		results = results[:limit]
 	}
 	return results, nil

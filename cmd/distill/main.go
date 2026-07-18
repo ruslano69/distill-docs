@@ -37,7 +37,7 @@ func main() {
 	// Collect args up to (not including) the action word.
 	var preAction, postAction []string
 	foundAction := false
-	actions := map[string]bool{"init": true, "add": true, "search": true, "count": true}
+	actions := map[string]bool{"init": true, "add": true, "search": true, "count": true, "eval": true}
 	for i, a := range os.Args[1:] {
 		if actions[a] {
 			preAction = os.Args[1 : i+1]
@@ -65,8 +65,67 @@ func main() {
 		runSearch(*dbPath, postAction)
 	case "count":
 		runCount(*dbPath, postAction)
+	case "eval":
+		runEval(*dbPath, postAction)
 	default:
 		fatalf("unknown action %q", action)
+	}
+}
+
+// runEval scores a golden query set (JSON: {"k":N,"queries":[{"query":...,
+// "expect":["SPEC-3",...]}]}) against the knowledge base — the retrieval
+// regression net. Run it before shipping an index and after any ranking/graph
+// change; a drop in hit@k / MRR is the alarm.
+func runEval(dbPath string, args []string) {
+	fs := flag.NewFlagSet("eval", flag.ExitOnError)
+	golden := fs.String("golden", "", "path to the golden eval set (JSON, required)")
+	mode := fs.String("mode", "hybrid", "search mode to evaluate: fts|vec|hybrid")
+	embedModel := fs.String("embed-model", "", "auto-embed queries via an Ollama model (for vec/hybrid)")
+	embedURL := fs.String("embed-url", embed.DefaultURL, "embeddings endpoint")
+	jsonOut := fs.Bool("json", false, "output JSON")
+	fs.Parse(args)
+
+	if *golden == "" {
+		fatalf("--golden required")
+	}
+	set, err := knowledge.LoadEvalSet(*golden)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	db, err := knowledge.Open(dbPath)
+	if err != nil {
+		fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	ec := embed.New(*embedURL, *embedModel)
+	run := func(q string, k int) ([]knowledge.Result, error) {
+		var emb []float32
+		if *mode == "vec" || *mode == "hybrid" {
+			emb = embedOne(ec, q)
+		}
+		return knowledge.Search(db, knowledge.SearchOpts{
+			Query: q, Embedding: emb, Mode: *mode, Metric: knowledge.MetricCosine, Limit: k, Prefix: true,
+		})
+	}
+	rep, err := knowledge.Evaluate(set, run)
+	if err != nil {
+		fatalf("evaluate: %v", err)
+	}
+
+	if *jsonOut {
+		json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"queries": rep.N, "k": set.K, "hit_at_k": rep.HitAtK, "mrr": rep.MRR})
+		return
+	}
+	fmt.Printf("eval: %d queries @k=%d  hit@k=%.4f  MRR=%.4f  (mode=%s)\n",
+		rep.N, set.K, rep.HitAtK, rep.MRR, *mode)
+	for _, qs := range rep.Per {
+		mark := "miss"
+		if qs.Hit {
+			mark = fmt.Sprintf("hit rr=%.3f", qs.ReciprocalRk)
+		}
+		fmt.Printf("  [%-4s] %s\n", mark, qs.Query)
 	}
 }
 
@@ -212,6 +271,15 @@ func runSearch(dbPath string, args []string) {
 	filterType := fs.String("filter-type", "", "pre-filter by document type before vector or regex search")
 	limit := fs.Int("limit", 10, "maximum results")
 	prefix := fs.Bool("prefix", true, "auto-append wildcard to FTS tokens (e.g. call → call*)")
+	// Stage-1 facet filters + ranking signals; all optional, zero = off.
+	topic := fs.String("topic", "", "scope to a topic facet")
+	role := fs.String("role", "", "scope to (and, with --role-affinity, boost) a role")
+	recencyWindow := fs.Duration("recency-window", 0, "linear recency window, e.g. 720h (0 = off)")
+	recencyWeight := fs.Float64("recency-weight", 0, "recency boost weight")
+	priorityWeight := fs.Float64("priority-weight", 0, "weight on the numeric priority attribute")
+	pinnedBoost := fs.Float64("pinned-boost", 0, "additive boost for pinned docs")
+	roleAffinity := fs.Float64("role-affinity", 0, "additive boost when role_tags include --role")
+	excludeSuperseded := fs.Bool("exclude-superseded", false, "drop docs another doc supersedes")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -235,21 +303,25 @@ func runSearch(dbPath string, args []string) {
 		emb = embedOne(embed.New(*embedURL, *embedModel), *query)
 	}
 	var results []knowledge.Result
-	switch *mode {
-	case "fts":
-		results, err = knowledge.SearchFTS(db, *query, *limit, *prefix)
-	case "vec":
-		if len(emb) == 0 {
-			fatalf("--embedding required for vec mode")
-		}
-		results, err = knowledge.SearchVec(db, emb, *limit, metric, *filterType)
-	case "regex":
+	if *mode == "regex" {
 		if *query == "" {
 			fatalf("--query required for regex mode")
 		}
 		results, err = knowledge.SearchRegex(db, *query, *limit, *filterType)
-	default:
-		results, err = knowledge.SearchHybrid(db, *query, emb, *limit, metric, *filterType, *prefix)
+	} else {
+		if *mode == "vec" && len(emb) == 0 {
+			fatalf("--embedding (or --embed-model) required for vec mode")
+		}
+		results, err = knowledge.Search(db, knowledge.SearchOpts{
+			Query: *query, Embedding: emb, Mode: *mode, Metric: metric,
+			Limit: *limit, Prefix: *prefix,
+			Filter: knowledge.Filter{Type: *filterType, Role: *role, Topic: *topic},
+			Rank: knowledge.RankOpts{
+				RecencyWindow: *recencyWindow, RecencyWeight: *recencyWeight,
+				PriorityWeight: *priorityWeight, PinnedBoost: *pinnedBoost,
+				RoleAffinity: *roleAffinity, ExcludeSuperseded: *excludeSuperseded,
+			},
+		})
 	}
 	if err != nil {
 		fatalf("search: %v", err)
@@ -397,8 +469,9 @@ Usage:
   distill [--db <path>] add    --title <t> --content <c> [--type <t>] [--meta <json>] [--embedding <floats> | --embed-model <m>] [--json]
   distill [--db <path>] add    --file <path.txt|md|pdf>  [--type <t>] [--chunk-size N] [--chunk-overlap N] [--embed-model <m>] [--json]
   distill [--db <path>] add    --url  <https://...>      [--type <t>] [--chunk-size N] [--max-pages N] [--embed-model <m>] [--json]
-  distill [--db <path>] search --query <q>               [--embedding <floats> | --embed-model <m>] [--mode fts|vec|hybrid] [--metric cosine|l2] [--filter-type <type>] [--limit N] [--json]
+  distill [--db <path>] search --query <q>               [--embedding <floats> | --embed-model <m>] [--mode fts|vec|hybrid|regex] [--type --topic --role] [--recency-window --recency-weight --priority-weight --pinned-boost --role-affinity --exclude-superseded] [--limit N] [--json]
   distill [--db <path>] count  [--json]
+  distill [--db <path>] eval   --golden <set.json>       [--mode fts|vec|hybrid] [--embed-model <m>] [--json]   (retrieval regression: hit@k + MRR)
 
 Default --db: .knowledge/docs.sqlite
 Embedding format: comma-separated float32 values, e.g. "0.1,0.2,0.3" or "[0.1,0.2,0.3]"
