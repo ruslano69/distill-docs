@@ -418,27 +418,33 @@ func printResults(results []knowledge.Result, asJSON bool) {
 	if asJSON {
 		type jsonResult struct {
 			ID          int64   `json:"id"`
+			Slug        string  `json:"slug"`
 			Title       string  `json:"title"`
 			Content     string  `json:"content"`
 			Type        string  `json:"type"`
 			CreatedAt   int64   `json:"created_at"`
 			Metadata    string  `json:"metadata"`
+			Snippet     string  `json:"snippet,omitempty"`
 			FTSRank     float64 `json:"fts_rank,omitempty"`
 			VecDist     float64 `json:"vec_dist,omitempty"`
 			HybridScore float64 `json:"hybrid_score,omitempty"`
+			Score       float64 `json:"score,omitempty"`
 		}
 		out := make([]jsonResult, len(results))
 		for i, r := range results {
 			out[i] = jsonResult{
 				ID:          r.ID,
+				Slug:        r.Slug(),
 				Title:       r.Title,
 				Content:     r.Content,
 				Type:        r.Type,
 				CreatedAt:   r.CreatedAt,
 				Metadata:    r.Metadata,
+				Snippet:     r.Snippet,
 				FTSRank:     r.FTSRank,
 				VecDist:     r.VecDist,
 				HybridScore: r.HybridScore,
+				Score:       r.Score,
 			}
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -447,11 +453,10 @@ func printResults(results []knowledge.Result, asJSON bool) {
 		return
 	}
 	for _, r := range results {
-		snippet := r.Content
-		if len(snippet) > 120 {
-			snippet = snippet[:117] + "..."
-		}
-		fmt.Printf("[%d] %s  (%s)\n    %s\n\n", r.ID, r.Title, r.Type, snippet)
+		// Preview() shows the keyword-in-context snippet when present (rune-safe,
+		// never a byte-slice that could split a multi-byte character), falling
+		// back to a rune-safe content head otherwise.
+		fmt.Printf("[%s] %s  (%s)\n    %s\n\n", r.Slug(), r.Title, r.Type, r.Preview(120))
 	}
 }
 
