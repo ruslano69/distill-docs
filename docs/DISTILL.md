@@ -199,7 +199,37 @@ distill search --query "error handling" --mode fts --limit 5 --json
 | `--filter-type` | — | restrict to one `type` before scoring (vec/regex modes) |
 | `--limit` | `10` | max results |
 | `--prefix` | `true` | auto-append `*` to FTS tokens (`call` → `call*`) so partial words match |
+| `--graph` | `0` | graph-aware: annotate each hit with up to N typed L2 relations (0 = off) |
+| `--cluster` | `false` | fold duplicate hits into their top-ranked representative |
 | `--json` | `false` | structured output instead of the text snippet view |
+
+#### Graph-aware retrieval (`--graph`, `--cluster`)
+
+Once the L2 graph exists (`distill digest`), search can *read* it — surfacing
+how a hit relates to the rest of the corpus, not just that it matched:
+
+```bash
+distill search --query "authentication" --graph 4
+# [SPEC-1] Auth v1  (spec)
+#     Authentication uses static API keys …
+#       → supersedes → SPEC-2  [proposed, 0.95]
+# [SPEC-2] Auth v2  (spec)  ⚠ superseded
+#       ← supersedes ← SPEC-1  [proposed, 0.95]
+```
+
+- **`--graph N`** annotates each hit with up to N typed relations, oriented
+  relative to the hit (`→` outgoing, `←` incoming). An **incoming** `supersedes`
+  or `contradicts` raises a `⚠ superseded` / `⚠ contradicted` banner — a
+  "don't ground on this, it's obsolete/disputed" signal *before* the agent cites
+  it. Off by default; the result order is unchanged.
+- **`--cluster`** folds hits the graph marks `duplicates` of a higher-ranked
+  result into that result (`⊕ folds SPEC-9 (duplicates)`), so a cluster of
+  near-identical docs takes one slot in the top-N instead of crowding it out.
+
+> Graph-aware retrieval is only as trustworthy as the edges the digester wrote:
+> a local model can mis-judge a relation (e.g. invert a `supersedes` direction).
+> The rendering is always faithful to the stored edge — treat `proposed` edges as
+> suggestions to confirm, not ground truth.
 
 #### Search modes
 
