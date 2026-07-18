@@ -355,18 +355,37 @@ func runCount(dbPath string, args []string) {
 // is configured. On any failure it warns once and returns nil, so ingestion
 // degrades to stored-without-vectors (FTS still works) rather than aborting a
 // large crawl/file over a transient embedder hiccup.
+// embedBatchSize bounds how many chunks go in one embedding request, so a
+// large ingest (a whole PDF = thousands of chunks) doesn't send one giant
+// request that blows the embedder's per-request timeout. A failed batch
+// degrades just its own chunks to no-vector (FTS still works for them),
+// leaving the rest embedded — resilient rather than all-or-nothing.
+const embedBatchSize = 128
+
 func embedChunks(ec *embed.Client, chunks []knowledge.Chunk) [][]float32 {
 	if !ec.Enabled() || len(chunks) == 0 {
 		return nil
 	}
-	texts := make([]string, len(chunks))
-	for i, c := range chunks {
-		texts[i] = c.Content
-	}
-	vecs, err := ec.EmbedBatch(texts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warn: embedding failed (%v); storing %d chunks without vectors (FTS only)\n", err, len(chunks))
-		return nil
+	vecs := make([][]float32, len(chunks))
+	warned := false
+	for start := 0; start < len(chunks); start += embedBatchSize {
+		end := start + embedBatchSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+		texts := make([]string, end-start)
+		for i := start; i < end; i++ {
+			texts[i-start] = chunks[i].Content
+		}
+		batch, err := ec.EmbedBatch(texts)
+		if err != nil {
+			if !warned {
+				fmt.Fprintf(os.Stderr, "warn: embedding batch failed (%v); those chunks stored without vectors (FTS only)\n", err)
+				warned = true
+			}
+			continue // leave vecs[start:end] nil
+		}
+		copy(vecs[start:end], batch)
 	}
 	return vecs
 }

@@ -60,12 +60,39 @@ func TestEmbedChunks_DisabledClientReturnsNil(t *testing.T) {
 	}
 }
 
-func TestEmbedChunks_FailureDegradesToNil(t *testing.T) {
-	// Dead endpoint: must warn+degrade to nil, not panic — ingestion falls
-	// back to storing without vectors.
+func TestEmbedChunks_FailureDegradesPerBatch(t *testing.T) {
+	// Dead endpoint: each failed batch degrades its own chunks to nil vectors
+	// (stored without a vector, FTS still works) — not a panic, not all-or-
+	// nothing. The result slice is chunk-aligned with nil entries.
 	ec := embed.New("http://127.0.0.1:1/dead", "test-model")
-	if v := embedChunks(ec, []knowledge.Chunk{{Content: "x"}}); v != nil {
-		t.Errorf("failed embed should degrade to nil, got %v", v)
+	vecs := embedChunks(ec, []knowledge.Chunk{{Content: "x"}, {Content: "y"}})
+	if len(vecs) != 2 {
+		t.Fatalf("want a chunk-aligned slice of len 2, got %d", len(vecs))
+	}
+	for i, v := range vecs {
+		if v != nil {
+			t.Errorf("vec[%d] should be nil after batch failure, got %v", i, v)
+		}
+	}
+}
+
+func TestEmbedChunks_BatchingCoversAll(t *testing.T) {
+	// More chunks than one batch: every chunk still gets a vector.
+	ts := fakeEmbedServer(t, 3)
+	defer ts.Close()
+	ec := embed.New(ts.URL, "test-model")
+	chunks := make([]knowledge.Chunk, embedBatchSize+50)
+	for i := range chunks {
+		chunks[i] = knowledge.Chunk{Content: "c"}
+	}
+	vecs := embedChunks(ec, chunks)
+	if len(vecs) != len(chunks) {
+		t.Fatalf("len = %d, want %d", len(vecs), len(chunks))
+	}
+	for i, v := range vecs {
+		if len(v) != 3 {
+			t.Fatalf("vec[%d] dim = %d, want 3 (batching dropped a chunk?)", i, len(v))
+		}
 	}
 }
 
