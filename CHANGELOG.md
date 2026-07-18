@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — Stage 3 (graph-aware retrieval)
+
+Wire the L2 knowledge graph into `Search`, which until now built the graph but
+never read it at retrieval time.
+
+- **`SearchOpts.GraphExpand N`** — annotate each returned `Result` with up to N
+  typed relations incident to it (`Result.Relations`), oriented relative to the
+  hit (`Relation.Outgoing`). `Result.Superseded()`/`Contradicted()` derive a
+  "don't ground on this" signal from incoming supersedes/contradicts edges.
+  Default 0 leaves output byte-identical to before (regression-safe).
+- **`SearchOpts.Cluster`** — fold hits the graph marks `duplicates` of a
+  higher-ranked result into that result (`Result.Folded`), de-crowding the top-N.
+- **CLI** — `distill search --graph N` renders relation chains
+  (`→ supersedes → SPEC-2`) and a `⚠ superseded`/`⚠ contradicted` banner;
+  `--cluster` renders `⊕ folds SPEC-X (duplicates)`; JSON gains `relations`,
+  `superseded`, `contradicted`, `folded`. Only returned docs are expanded
+  (O(limit) edge lookups, after truncation).
+- Refreshed `internal/knowledge/AGENTS.md` to the current package surface.
+
 ## v0.3.0 — 2026-07-18
 
 The knowledge graph goes live, and any conversation becomes a knowledge base.
