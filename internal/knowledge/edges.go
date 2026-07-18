@@ -154,6 +154,45 @@ func TypedNeighbors(db *sql.DB, id int64, limit int) ([]Edge, error) {
 	return scanEdges(rows)
 }
 
+// relationsFor returns the typed (non-knn) edges incident to doc id — both
+// outgoing (id is subject) and incoming (id is object) — strongest first,
+// oriented relative to id and with the other end's slug resolved in the same
+// query. This is the read primitive behind Stage-3 graph-aware retrieval: it
+// lets Search annotate a hit with "supersedes X" / "superseded by Y" without a
+// second round-trip per neighbor.
+func relationsFor(db *sql.DB, id int64, limit int) ([]Relation, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	rows, err := db.Query(
+		`SELECT e.kind, e.weight, e.status,
+		        CASE WHEN e.src = ? THEN 1 ELSE 0 END AS outgoing,
+		        d.id, d.type
+		   FROM edges e
+		   JOIN docs d ON d.id = CASE WHEN e.src = ? THEN e.dst ELSE e.src END
+		  WHERE (e.src = ? OR e.dst = ?) AND e.kind != 'knn'
+		  ORDER BY e.weight DESC
+		  LIMIT ?`,
+		id, id, id, id, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Relation
+	for rows.Next() {
+		var rel Relation
+		var outgoing int
+		var targetType string
+		if err := rows.Scan(&rel.Kind, &rel.Weight, &rel.Status, &outgoing, &rel.TargetID, &targetType); err != nil {
+			return nil, err
+		}
+		rel.Outgoing = outgoing == 1
+		rel.TargetSlug = Doc{ID: rel.TargetID, Type: targetType}.Slug()
+		out = append(out, rel)
+	}
+	return out, rows.Err()
+}
+
 // UpsertTypedEdge writes (or replaces) one typed L2 edge with its provenance,
 // via the given transaction. knn edges are written by BuildKNNEdges; this is the
 // digester's write path. Replacing on the (src,dst,kind) key makes a re-digest

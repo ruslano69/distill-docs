@@ -510,6 +510,7 @@ func runSearch(dbPath string, args []string) {
 	pinnedBoost := fs.Float64("pinned-boost", 0, "additive boost for pinned docs")
 	roleAffinity := fs.Float64("role-affinity", 0, "additive boost when role_tags include --role")
 	excludeSuperseded := fs.Bool("exclude-superseded", false, "drop docs another doc supersedes")
+	graph := fs.Int("graph", 0, "graph-aware: annotate each hit with up to N typed L2 relations (0 = off)")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -551,6 +552,7 @@ func runSearch(dbPath string, args []string) {
 				PriorityWeight: *priorityWeight, PinnedBoost: *pinnedBoost,
 				RoleAffinity: *roleAffinity, ExcludeSuperseded: *excludeSuperseded,
 			},
+			GraphExpand: *graph,
 		})
 	}
 	if err != nil {
@@ -665,35 +667,52 @@ func parseEmbedding(raw string) []float32 {
 
 func printResults(results []knowledge.Result, asJSON bool) {
 	if asJSON {
+		type jsonRelation struct {
+			Kind     string  `json:"kind"`
+			Outgoing bool    `json:"outgoing"`
+			Target   string  `json:"target"`
+			Weight   float64 `json:"weight"`
+			Status   string  `json:"status"`
+		}
 		type jsonResult struct {
-			ID          int64   `json:"id"`
-			Slug        string  `json:"slug"`
-			Title       string  `json:"title"`
-			Content     string  `json:"content"`
-			Type        string  `json:"type"`
-			CreatedAt   int64   `json:"created_at"`
-			Metadata    string  `json:"metadata"`
-			Snippet     string  `json:"snippet,omitempty"`
-			FTSRank     float64 `json:"fts_rank,omitempty"`
-			VecDist     float64 `json:"vec_dist,omitempty"`
-			HybridScore float64 `json:"hybrid_score,omitempty"`
-			Score       float64 `json:"score,omitempty"`
+			ID           int64          `json:"id"`
+			Slug         string         `json:"slug"`
+			Title        string         `json:"title"`
+			Content      string         `json:"content"`
+			Type         string         `json:"type"`
+			CreatedAt    int64          `json:"created_at"`
+			Metadata     string         `json:"metadata"`
+			Snippet      string         `json:"snippet,omitempty"`
+			FTSRank      float64        `json:"fts_rank,omitempty"`
+			VecDist      float64        `json:"vec_dist,omitempty"`
+			HybridScore  float64        `json:"hybrid_score,omitempty"`
+			Score        float64        `json:"score,omitempty"`
+			Superseded   bool           `json:"superseded,omitempty"`
+			Contradicted bool           `json:"contradicted,omitempty"`
+			Relations    []jsonRelation `json:"relations,omitempty"`
 		}
 		out := make([]jsonResult, len(results))
 		for i, r := range results {
+			var rels []jsonRelation
+			for _, rel := range r.Relations {
+				rels = append(rels, jsonRelation{rel.Kind, rel.Outgoing, rel.TargetSlug, rel.Weight, rel.Status})
+			}
 			out[i] = jsonResult{
-				ID:          r.ID,
-				Slug:        r.Slug(),
-				Title:       r.Title,
-				Content:     r.Content,
-				Type:        r.Type,
-				CreatedAt:   r.CreatedAt,
-				Metadata:    r.Metadata,
-				Snippet:     r.Snippet,
-				FTSRank:     r.FTSRank,
-				VecDist:     r.VecDist,
-				HybridScore: r.HybridScore,
-				Score:       r.Score,
+				ID:           r.ID,
+				Slug:         r.Slug(),
+				Title:        r.Title,
+				Content:      r.Content,
+				Type:         r.Type,
+				CreatedAt:    r.CreatedAt,
+				Metadata:     r.Metadata,
+				Snippet:      r.Snippet,
+				FTSRank:      r.FTSRank,
+				VecDist:      r.VecDist,
+				HybridScore:  r.HybridScore,
+				Score:        r.Score,
+				Superseded:   r.Superseded(),
+				Contradicted: r.Contradicted(),
+				Relations:    rels,
 			}
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -702,10 +721,27 @@ func printResults(results []knowledge.Result, asJSON bool) {
 		return
 	}
 	for _, r := range results {
+		// A "don't ground on this" banner when the graph says the hit is
+		// obsolete or disputed (only populated when --graph is on).
+		var warn string
+		if r.Superseded() {
+			warn += "  ⚠ superseded"
+		}
+		if r.Contradicted() {
+			warn += "  ⚠ contradicted"
+		}
 		// Preview() shows the keyword-in-context snippet when present (rune-safe,
 		// never a byte-slice that could split a multi-byte character), falling
 		// back to a rune-safe content head otherwise.
-		fmt.Printf("[%s] %s  (%s)\n    %s\n\n", r.Slug(), r.Title, r.Type, r.Preview(120))
+		fmt.Printf("[%s] %s  (%s)%s\n    %s\n", r.Slug(), r.Title, r.Type, warn, r.Preview(120))
+		for _, rel := range r.Relations {
+			arrow := fmt.Sprintf("→ %s → %s", rel.Kind, rel.TargetSlug)
+			if !rel.Outgoing {
+				arrow = fmt.Sprintf("← %s ← %s", rel.Kind, rel.TargetSlug)
+			}
+			fmt.Printf("      %s  [%s, %.2f]\n", arrow, rel.Status, rel.Weight)
+		}
+		fmt.Println()
 	}
 }
 

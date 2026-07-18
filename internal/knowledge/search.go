@@ -442,6 +442,11 @@ type SearchOpts struct {
 	Filter    Filter
 	Rank      RankOpts
 	Now       int64 // 0 => time.Now().Unix(); injectable for deterministic tests
+	// GraphExpand > 0 turns on Stage-3 graph-aware retrieval: after ranking,
+	// each returned Result is annotated with up to this many typed L2 relations
+	// (supersedes/contradicts/elaborates/...) incident to it, oriented relative
+	// to the hit. 0 (default) leaves Result.Relations nil — identical to today.
+	GraphExpand int
 }
 
 // Search is the unified re-scoring entry point (Stage 1). It retrieves a
@@ -545,6 +550,19 @@ func Search(db *sql.DB, o SearchOpts) ([]Result, error) {
 	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
 	if len(results) > limit {
 		results = results[:limit]
+	}
+
+	// Stage-3 graph-aware retrieval: annotate the (already truncated) top hits
+	// with their typed L2 relations. Done after truncation so we expand only the
+	// docs we return — O(limit) edge lookups, not the whole candidate pool.
+	if o.GraphExpand > 0 {
+		for i := range results {
+			rels, err := relationsFor(db, results[i].ID, o.GraphExpand)
+			if err != nil {
+				return nil, err
+			}
+			results[i].Relations = rels
+		}
 	}
 	return results, nil
 }
