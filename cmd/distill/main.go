@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ruslano69/distill-docs/internal/version"
+	"github.com/ruslano69/distill-docs/internal/digest"
 	"github.com/ruslano69/distill-docs/internal/embed"
 	"github.com/ruslano69/distill-docs/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/llm"
+	"github.com/ruslano69/distill-docs/internal/version"
 )
 
 func main() {
@@ -37,7 +40,7 @@ func main() {
 	// Collect args up to (not including) the action word.
 	var preAction, postAction []string
 	foundAction := false
-	actions := map[string]bool{"init": true, "add": true, "search": true, "count": true, "eval": true}
+	actions := map[string]bool{"init": true, "add": true, "search": true, "count": true, "eval": true, "digest": true, "graph": true}
 	for i, a := range os.Args[1:] {
 		if actions[a] {
 			preAction = os.Args[1 : i+1]
@@ -67,6 +70,10 @@ func main() {
 		runCount(*dbPath, postAction)
 	case "eval":
 		runEval(*dbPath, postAction)
+	case "digest":
+		runDigest(*dbPath, postAction)
+	case "graph":
+		runGraph(*dbPath, postAction)
 	default:
 		fatalf("unknown action %q", action)
 	}
@@ -126,6 +133,144 @@ func runEval(dbPath string, args []string) {
 			mark = fmt.Sprintf("hit rr=%.3f", qs.ReciprocalRk)
 		}
 		fmt.Printf("  [%-4s] %s\n", mark, qs.Query)
+	}
+}
+
+// runDigest runs the L2 knowledge-graph digester: (re)build the kNN geometry,
+// then ask a local LLM to classify each candidate pair into a typed relation
+// (supersedes/contradicts/...). Incremental and resumable — a pair whose
+// content is unchanged since last digest is skipped. Requires --model (the
+// Ollama generate model). Vectors must already be stored (digest reads the kNN
+// geometry, which comes from docs_vec); if none exist there are no candidates.
+func runDigest(dbPath string, args []string) {
+	fs := flag.NewFlagSet("digest", flag.ExitOnError)
+	model := fs.String("model", "", "Ollama generate model for classification (e.g. gemma4:12b) — required")
+	llmURL := fs.String("llm-url", llm.DefaultURL, "generate endpoint")
+	k := fs.Int("k", 5, "neighbors per doc considered as relation candidates")
+	minConf := fs.Float64("min-confidence", 0.5, "drop proposed edges below this confidence")
+	limit := fs.Int("limit", 0, "stop after classifying this many pairs (0 = all)")
+	rebuildKNN := fs.Bool("rebuild-knn", true, "rebuild the kNN geometry before digesting")
+	jsonOut := fs.Bool("json", false, "output JSON")
+	fs.Parse(args)
+
+	if *model == "" {
+		fatalf("--model required (e.g. --model gemma4:12b)")
+	}
+
+	db, err := knowledge.Open(dbPath)
+	if err != nil {
+		fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	client := digest.LLMClassifier{Client: llm.New(*llmURL, *model)}
+	if !*jsonOut {
+		fmt.Fprintf(os.Stderr, "digesting with %s (k=%d, min-confidence=%.2f)…\n", *model, *k, *minConf)
+	}
+	rep, err := digest.Run(context.Background(), db, client, digest.Options{
+		K: *k, MinConfidence: *minConf, EnsureKNN: *rebuildKNN, Limit: *limit,
+	})
+	if err != nil {
+		fatalf("digest: %v", err)
+	}
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(map[string]any{
+			"candidates": rep.Candidates, "skipped": rep.Skipped, "classified": rep.Classified,
+			"edges_written": rep.EdgesWritten, "errors": rep.Errors, "by_kind": rep.ByKind,
+		})
+		return
+	}
+	fmt.Printf("digest: %d candidates, %d skipped (clean), %d classified, %d edges written",
+		rep.Candidates, rep.Skipped, rep.Classified, rep.EdgesWritten)
+	if rep.Errors > 0 {
+		fmt.Printf(", %d errors", rep.Errors)
+	}
+	fmt.Println()
+	for _, kind := range digest.Kinds {
+		if n := rep.ByKind[kind]; n > 0 {
+			fmt.Printf("  %-12s %d\n", kind, n)
+		}
+	}
+	if rep.Candidates == 0 {
+		fmt.Fprintln(os.Stderr, "note: no candidates — the kNN geometry is empty (ingest with --embed-model to store vectors)")
+	}
+}
+
+// runGraph prints one doc's typed L2 relations as legible chains — the
+// graph-response view that trades prose for structure. Resolve a doc by slug
+// (SPEC-42) and show its outgoing typed edges (supersedes/elaborates/...) with
+// confidence, status, and the digester's rationale.
+func runGraph(dbPath string, args []string) {
+	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	slug := fs.String("slug", "", "doc slug to inspect, e.g. SPEC-42 (or pass as first arg)")
+	limit := fs.Int("limit", 20, "max relations to show")
+	jsonOut := fs.Bool("json", false, "output JSON")
+	fs.Parse(args)
+
+	target := *slug
+	if target == "" && fs.NArg() > 0 {
+		target = fs.Arg(0)
+	}
+	if target == "" {
+		fatalf("--slug required (e.g. distill graph SPEC-42)")
+	}
+	id, err := knowledge.ParseSlugID(target)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	db, err := knowledge.Open(dbPath)
+	if err != nil {
+		fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	doc, err := knowledge.DocByID(db, id)
+	if err != nil {
+		fatalf("load %s: %v", target, err)
+	}
+	edges, err := knowledge.TypedNeighbors(db, id, *limit)
+	if err != nil {
+		fatalf("graph: %v", err)
+	}
+
+	if *jsonOut {
+		type rel struct {
+			Kind, Status, Target, Rationale, Model string
+			Confidence                             float64
+		}
+		rels := make([]rel, 0, len(edges))
+		for _, e := range edges {
+			dst, _ := knowledge.DocByID(db, e.Dst)
+			rels = append(rels, rel{
+				Kind: e.Kind, Status: e.Status, Target: dst.Slug(),
+				Rationale: e.Rationale, Model: e.Model, Confidence: e.Weight,
+			})
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(map[string]any{"slug": doc.Slug(), "title": doc.Title, "relations": rels})
+		return
+	}
+
+	fmt.Printf("%s  %s\n", doc.Slug(), doc.Title)
+	if len(edges) == 0 {
+		fmt.Println("  (no typed relations — run `distill digest --model <m>` to build the L2 graph)")
+		return
+	}
+	for _, e := range edges {
+		dst, err := knowledge.DocByID(db, e.Dst)
+		dstLabel := fmt.Sprintf("id-%d", e.Dst)
+		if err == nil {
+			dstLabel = fmt.Sprintf("%s %s", dst.Slug(), truncate(dst.Title, 40))
+		}
+		fmt.Printf("  → %-12s → %s  [%s, conf %.2f]\n", e.Kind, dstLabel, e.Status, e.Weight)
+		if e.Rationale != "" {
+			fmt.Printf("      %q\n", truncate(e.Rationale, 100))
+		}
 	}
 }
 
@@ -487,6 +632,8 @@ Actions:
   add     Add a document
   search  Search documents
   count   Print total document count
+  digest  Build the L2 typed knowledge graph (LLM classifies kNN neighbors)
+  graph   Show a doc's typed relations (supersedes/elaborates/...)
 
 Usage:
   distill [--db <path>] init
@@ -496,6 +643,8 @@ Usage:
   distill [--db <path>] search --query <q>               [--embedding <floats> | --embed-model <m>] [--mode fts|vec|hybrid|regex] [--type --topic --role] [--recency-window --recency-weight --priority-weight --pinned-boost --role-affinity --exclude-superseded] [--limit N] [--json]
   distill [--db <path>] count  [--json]
   distill [--db <path>] eval   --golden <set.json>       [--mode fts|vec|hybrid] [--embed-model <m>] [--json]   (retrieval regression: hit@k + MRR)
+  distill [--db <path>] digest --model <ollama-model>    [--k N] [--min-confidence F] [--limit N] [--rebuild-knn] [--json]   (L2 typed graph)
+  distill [--db <path>] graph  <SLUG>                    [--limit N] [--json]   (typed relations of one doc)
 
 Default --db: .knowledge/docs.sqlite
 Embedding format: comma-separated float32 values, e.g. "0.1,0.2,0.3" or "[0.1,0.2,0.3]"
