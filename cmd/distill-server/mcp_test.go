@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ruslano69/distill-docs/internal/embed"
+	"github.com/ruslano69/distill-docs/internal/knowledge"
 	"github.com/ruslano69/distill-docs/internal/truth"
 )
 
@@ -70,8 +71,73 @@ func TestMCPHandshakeAndToolsList(t *testing.T) {
 		t.Fatalf("protocolVersion = %v", init["protocolVersion"])
 	}
 	tools := resp[1].Result.(map[string]any)["tools"].([]any)
-	if len(tools) != 14 {
-		t.Fatalf("want 14 tools, got %d", len(tools))
+	if len(tools) != 15 {
+		t.Fatalf("want 15 tools, got %d", len(tools))
+	}
+	names := map[string]bool{}
+	for _, tl := range tools {
+		names[tl.(map[string]any)["name"].(string)] = true
+	}
+	if !names["graph"] {
+		t.Error("tools/list missing the graph tool")
+	}
+}
+
+// TestMCPGraphParity proves the graph reaches the server: a typed edge seeded on
+// the write-log survives publish (VACUUM INTO) into the release, and both the
+// `graph` tool and `search` with graph annotation surface it.
+func TestMCPGraphParity(t *testing.T) {
+	dir := t.TempDir()
+
+	// Ingest two specs into the write-log (ids 1 and 2).
+	runSession(t, dir,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ingest","arguments":{"title":"Auth v1","content":"authentication uses api keys","type":"spec"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ingest","arguments":{"title":"Auth v2","content":"authentication uses oauth device flow","type":"spec"}}}`,
+	)
+
+	// Seed a typed edge directly on the write-log: SPEC-2 supersedes SPEC-1.
+	store, err := truth.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := knowledge.Open(store.WriteLogPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, _ := db.Begin()
+	if err := knowledge.UpsertTypedEdge(tx, knowledge.Edge{Src: 2, Dst: 1, Weight: 0.9, Kind: "supersedes", Status: "proposed"}); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	db.Close()
+	store.Close()
+
+	// Publish (carries edges via VACUUM INTO), then read the graph two ways.
+	resp := runSession(t, dir,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"publish","arguments":{"name":"2026.07","channel":"stable"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"graph","arguments":{"slug":"SPEC-2","channel":"stable"}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search","arguments":{"query":"authentication","channel":"stable","graph":4}}}`,
+	)
+	if len(resp) != 3 {
+		t.Fatalf("want 3 responses, got %d", len(resp))
+	}
+
+	// graph SPEC-2 → outgoing supersedes → SPEC-1.
+	gtext, isErr := contentText(t, resp[1])
+	if isErr {
+		t.Fatalf("graph tool errored: %s", gtext)
+	}
+	if !strings.Contains(gtext, "supersedes") || !strings.Contains(gtext, "SPEC-1") {
+		t.Errorf("graph tool missing the supersedes→SPEC-1 relation:\n%s", gtext)
+	}
+
+	// search with graph annotation should carry the relation into the results.
+	stext, isErr := contentText(t, resp[2])
+	if isErr {
+		t.Fatalf("graph search errored: %s", stext)
+	}
+	if !strings.Contains(stext, "supersedes") {
+		t.Errorf("graph-annotated search missing relations:\n%s", stext)
 	}
 }
 
