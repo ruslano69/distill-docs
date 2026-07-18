@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+
+    - name: Get version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+    - name: Build cross-platform binaries
+      run: |
+        mkdir -p dist
+        TOOLS="distill distill-server"
+        # Embed the tag version so released binaries report it via --version.
+        LDFLAGS="-s -w -X github.com/ruslano69/distill-docs/internal/version.Version=${{ steps.get_version.outputs.VERSION }}"
+
+        for OS_ARCH in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          GOOS=${OS_ARCH%/*}
+          GOARCH=${OS_ARCH#*/}
+          echo "Building for $GOOS/$GOARCH..."
+          for tool in $TOOLS; do
+            GOOS=$GOOS GOARCH=$GOARCH go build -ldflags "${LDFLAGS}" -o dist/${tool}-${GOOS}-${GOARCH} ./cmd/${tool}
+          done
+        done
+
+        echo "Building for windows/amd64..."
+        for tool in $TOOLS; do
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/${tool}-windows-amd64.exe ./cmd/${tool}
+        done
+
+    - name: Create archives
+      run: |
+        cd dist
+        VER=${{ steps.get_version.outputs.VERSION }}
+        TOOLS="distill distill-server"
+
+        for PLATFORM in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+          FILES=""
+          for tool in $TOOLS; do FILES="$FILES ${tool}-${PLATFORM}"; done
+          tar czf distill-docs-${VER}-${PLATFORM}.tar.gz $FILES
+        done
+
+        FILES=""
+        for tool in $TOOLS; do FILES="$FILES ${tool}-windows-amd64.exe"; done
+        zip distill-docs-${VER}-windows-amd64.zip $FILES
+
+    - name: Generate checksums
+      run: |
+        cd dist
+        sha256sum *.tar.gz *.zip > checksums.txt
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          dist/*.tar.gz
+          dist/*.zip
+          dist/checksums.txt
+        body: |
+          ## distill-docs v${{ steps.get_version.outputs.VERSION }}
+
+          Distill primary information into knowledge. See
+          [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
+
+          ### Install (Linux / macOS)
+          ```bash
+          tar xzf distill-docs-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz
+          sudo mv distill-* /usr/local/bin/
+          ```
+
+          #### Windows
+          Download `distill-docs-${{ steps.get_version.outputs.VERSION }}-windows-amd64.zip` and extract to a directory in your PATH.
+
+          ### Verify checksums
+          ```bash
+          sha256sum -c checksums.txt
+          ```
+
+          ### Binaries
+          - **distill**: knowledge-base CLI — FTS5 + vector hybrid search, file/PDF/web ingest, Ollama auto-embedding
+          - **distill-server**: versioned truth server — releases/channels, provenance, MCP + TCP/HTTP, funcfinder code-ingest
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
