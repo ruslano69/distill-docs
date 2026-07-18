@@ -1,22 +1,12 @@
 # Changelog
 
-## Unreleased — session transcript ingest
+## v0.3.0 — 2026-07-18
 
-- **`distill add --session <transcript.jsonl>`** — ingest a Claude Code session
-  transcript as durable, queryable memory. Each turn becomes one or more docs
-  (long turns chunked), typed by **role** (`user`/`assistant`/`thinking`) so a
-  single conversation yields three separable *slices of knowledge*: search only
-  answers (`--filter-type assistant`), isolate reasoning (`--filter-type
-  thinking`), or drop thinking entirely. `tool_use`/`tool_result` blocks and the
-  opaque base64 thinking `signature` are excluded (actions/crypto, not content).
-- **Historical timestamps** — new `knowledge.AddAt` inserts with an explicit
-  `created_at`, so each turn's doc carries its **real** conversation time, not
-  import time; recency ranking and chronology stay honest. Provenance (uuid, git
-  branch, model) is stored in metadata; the branch doubles as a `topic` facet.
-- `internal/knowledge/session.go` — transcript parser (`ParseSession`,
-  polymorphic string/blocks content), per-turn chunking, and metadata rendering.
+The knowledge graph goes live, and any conversation becomes a knowledge base.
+This release folds in Stage 1 (ranking + L1 geometry, first cut here) — no
+`v0.2.0` was published separately.
 
-## v0.3.0 — Stage 2 (L2 typed knowledge graph)
+### L2 typed knowledge graph (Stage 2)
 
 Turn the anonymous L1 geometry into *knowledge*: a local LLM classifies which
 near-neighbor pairs are actually related, and how. "Doc 42 is near doc 12"
@@ -44,7 +34,23 @@ edge you can rank and reason over.
   text or `--json`. **`distilld`** — background daemon looping the digester on an
   interval with graceful shutdown, sharing the engine with `distill digest`.
 
-## v0.2.0 — Stage 1 (ranking + L1 graph)
+### Session transcript ingest
+
+- **`distill add --session <transcript.jsonl>`** — ingest a Claude Code session
+  transcript as durable, queryable memory. Each turn becomes one or more docs
+  (long turns chunked), typed by **role** (`user`/`assistant`/`thinking`) so a
+  single conversation yields three separable *slices of knowledge*: search only
+  answers (`--filter-type assistant`), isolate reasoning (`--filter-type
+  thinking`), or drop thinking entirely. `tool_use`/`tool_result` blocks and the
+  opaque base64 thinking `signature` are excluded (actions/crypto, not content).
+- **Historical timestamps** — new `knowledge.AddAt` inserts with an explicit
+  `created_at`, so each turn's doc carries its **real** conversation time, not
+  import time; recency ranking and chronology stay honest. Provenance (uuid, git
+  branch, model) is stored in metadata; the branch doubles as a `topic` facet.
+- `internal/knowledge/session.go` — transcript parser (`ParseSession`,
+  polymorphic string/blocks content), per-turn chunking, and metadata rendering.
+
+### Stage 1 — ranking + L1 graph (first published here)
 
 The knowledge-layer foundation: turn retrieval into a re-scorable, filterable
 index with a deterministic connectivity graph — the substrate the L2 digester
