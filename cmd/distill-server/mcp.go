@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ruslano69/distill-docs/internal/codemap"
 	"github.com/ruslano69/distill-docs/internal/embed"
@@ -264,18 +265,25 @@ func (m *mcpServer) toolSearch(args map[string]any) (string, error) {
 	defer db.Close()
 
 	var res []knowledge.Result
-	switch mode {
-	case "fts":
-		res, err = knowledge.SearchFTS(db, query, limit, true)
-	case "vec":
-		if len(emb) == 0 {
+	if mode == "regex" {
+		res, err = knowledge.SearchRegex(db, query, limit, argStr(args, "type", ""))
+	} else {
+		if mode == "vec" && len(emb) == 0 {
 			return "", fmt.Errorf("embedding required for vec mode")
 		}
-		res, err = knowledge.SearchVec(db, emb, limit, knowledge.MetricCosine, "")
-	case "regex":
-		res, err = knowledge.SearchRegex(db, query, limit, "")
-	default:
-		res, err = knowledge.SearchHybrid(db, query, emb, limit, knowledge.MetricCosine, "", true)
+		res, err = knowledge.Search(db, knowledge.SearchOpts{
+			Query: query, Embedding: emb, Mode: mode, Metric: knowledge.MetricCosine,
+			Limit: limit, Prefix: true,
+			Filter: knowledge.Filter{Type: argStr(args, "type", ""), Role: argStr(args, "role", ""), Topic: argStr(args, "topic", "")},
+			Rank: knowledge.RankOpts{
+				RecencyWindow:     time.Duration(argFloat(args, "recency_window_hours", 0)) * time.Hour,
+				RecencyWeight:     argFloat(args, "recency_weight", 0),
+				PriorityWeight:    argFloat(args, "priority_weight", 0),
+				PinnedBoost:       argFloat(args, "pinned_boost", 0),
+				RoleAffinity:      argFloat(args, "role_affinity", 0),
+				ExcludeSuperseded: argBool(args, "exclude_superseded"),
+			},
+		})
 	}
 	if err != nil {
 		return "", err
@@ -333,7 +341,7 @@ func (m *mcpServer) toolContext(args map[string]any) (string, error) {
 	}
 	defer db.Close()
 
-	docs, err := knowledge.ByRole(db, role, limit)
+	docs, err := knowledge.ByRoleTopic(db, role, argStr(args, "topic", ""), limit)
 	if err != nil {
 		return "", err
 	}

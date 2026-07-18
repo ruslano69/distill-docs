@@ -212,6 +212,15 @@ func runSearch(dbPath string, args []string) {
 	filterType := fs.String("filter-type", "", "pre-filter by document type before vector or regex search")
 	limit := fs.Int("limit", 10, "maximum results")
 	prefix := fs.Bool("prefix", true, "auto-append wildcard to FTS tokens (e.g. call → call*)")
+	// Stage-1 facet filters + ranking signals; all optional, zero = off.
+	topic := fs.String("topic", "", "scope to a topic facet")
+	role := fs.String("role", "", "scope to (and, with --role-affinity, boost) a role")
+	recencyWindow := fs.Duration("recency-window", 0, "linear recency window, e.g. 720h (0 = off)")
+	recencyWeight := fs.Float64("recency-weight", 0, "recency boost weight")
+	priorityWeight := fs.Float64("priority-weight", 0, "weight on the numeric priority attribute")
+	pinnedBoost := fs.Float64("pinned-boost", 0, "additive boost for pinned docs")
+	roleAffinity := fs.Float64("role-affinity", 0, "additive boost when role_tags include --role")
+	excludeSuperseded := fs.Bool("exclude-superseded", false, "drop docs another doc supersedes")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -235,21 +244,25 @@ func runSearch(dbPath string, args []string) {
 		emb = embedOne(embed.New(*embedURL, *embedModel), *query)
 	}
 	var results []knowledge.Result
-	switch *mode {
-	case "fts":
-		results, err = knowledge.SearchFTS(db, *query, *limit, *prefix)
-	case "vec":
-		if len(emb) == 0 {
-			fatalf("--embedding required for vec mode")
-		}
-		results, err = knowledge.SearchVec(db, emb, *limit, metric, *filterType)
-	case "regex":
+	if *mode == "regex" {
 		if *query == "" {
 			fatalf("--query required for regex mode")
 		}
 		results, err = knowledge.SearchRegex(db, *query, *limit, *filterType)
-	default:
-		results, err = knowledge.SearchHybrid(db, *query, emb, *limit, metric, *filterType, *prefix)
+	} else {
+		if *mode == "vec" && len(emb) == 0 {
+			fatalf("--embedding (or --embed-model) required for vec mode")
+		}
+		results, err = knowledge.Search(db, knowledge.SearchOpts{
+			Query: *query, Embedding: emb, Mode: *mode, Metric: metric,
+			Limit: *limit, Prefix: *prefix,
+			Filter: knowledge.Filter{Type: *filterType, Role: *role, Topic: *topic},
+			Rank: knowledge.RankOpts{
+				RecencyWindow: *recencyWindow, RecencyWeight: *recencyWeight,
+				PriorityWeight: *priorityWeight, PinnedBoost: *pinnedBoost,
+				RoleAffinity: *roleAffinity, ExcludeSuperseded: *excludeSuperseded,
+			},
+		})
 	}
 	if err != nil {
 		fatalf("search: %v", err)
