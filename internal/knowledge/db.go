@@ -55,17 +55,39 @@ CREATE TABLE IF NOT EXISTS docs_vec (
 
 -- edges is the knowledge-connectivity graph (L1/L2). Stage 1 populates
 -- kind='knn' edges deterministically from vector cosine similarity; the L2
--- digester (later) adds typed edges (supersedes/contradicts/...). No cross-row
--- FK: edges are a regenerable projection of docs, rebuilt not integrity-enforced.
+-- digester (Stage 2) adds typed edges (supersedes/contradicts/...) with
+-- provenance: weight = confidence, status = proposed|confirmed, rationale = the
+-- LLM's one-line reason, model = which model proposed it, updated_at = when. No
+-- cross-row FK: edges are a regenerable projection of docs, rebuilt not
+-- integrity-enforced. status lets policy/humans confirm irreversible edges
+-- (supersedes) before ranking trusts them; knn edges are 'confirmed' by nature.
 CREATE TABLE IF NOT EXISTS edges (
-    src    INTEGER NOT NULL,
-    dst    INTEGER NOT NULL,
-    weight REAL    NOT NULL DEFAULT 0,
-    kind   TEXT    NOT NULL DEFAULT 'knn',
+    src        INTEGER NOT NULL,
+    dst        INTEGER NOT NULL,
+    weight     REAL    NOT NULL DEFAULT 0,
+    kind       TEXT    NOT NULL DEFAULT 'knn',
+    status     TEXT    NOT NULL DEFAULT 'confirmed',
+    rationale  TEXT    NOT NULL DEFAULT '',
+    model      TEXT    NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (src, dst, kind)
 );
 CREATE INDEX IF NOT EXISTS edges_src_idx ON edges(src, kind);
 CREATE INDEX IF NOT EXISTS edges_dst_idx ON edges(dst, kind);
+
+-- digest_state is the L2 digester's dirty-marking / resume ledger: one row per
+-- candidate (src,dst) pair the digester has already classified, stamped with a
+-- fingerprint of both docs' content. On the next pass, a pair whose fingerprint
+-- still matches is skipped (incremental, resumable); an edited doc changes the
+-- fingerprint and re-dirties every pair it touches. Not integrity-enforced —
+-- like edges, a regenerable projection of docs.
+CREATE TABLE IF NOT EXISTS digest_state (
+    src         INTEGER NOT NULL,
+    dst         INTEGER NOT NULL,
+    fingerprint TEXT    NOT NULL,
+    digested_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (src, dst)
+);
 
 CREATE TRIGGER IF NOT EXISTS docs_fts_ai AFTER INSERT ON docs BEGIN
     INSERT INTO docs_fts(rowid, title, content)
@@ -101,7 +123,58 @@ func Open(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = migrateEdgeColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// edgeProvenanceColumns are the Stage-2 columns added to a pre-existing edges
+// table (one created before the L2 digester's provenance fields existed).
+var edgeProvenanceColumns = []struct{ name, decl string }{
+	{"status", "TEXT NOT NULL DEFAULT 'confirmed'"},
+	{"rationale", "TEXT NOT NULL DEFAULT ''"},
+	{"model", "TEXT NOT NULL DEFAULT ''"},
+	{"updated_at", "INTEGER NOT NULL DEFAULT 0"},
+}
+
+// migrateEdgeColumns adds the provenance columns to an edges table that predates
+// them. edges has no generated columns, so plain table_info is sufficient (and
+// the DEFAULTs backfill existing knn rows to a sane 'confirmed'/empty state).
+func migrateEdgeColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(edges)`)
+	if err != nil {
+		return err
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err = rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, c := range edgeProvenanceColumns {
+		if existing[c.name] {
+			continue
+		}
+		if _, err = db.Exec(`ALTER TABLE edges ADD COLUMN ` + c.name + ` ` + c.decl); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // metadataGeneratedColumns are the FR-3 columns generated from docs.metadata.

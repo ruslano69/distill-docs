@@ -7,9 +7,13 @@ import (
 
 // Edge is one directed link in the knowledge-connectivity graph.
 type Edge struct {
-	Src, Dst int64
-	Weight   float64 // cosine similarity for kind="knn"; LLM confidence for typed edges
-	Kind     string  // "knn" (L1 geometry) | supersedes|contradicts|... (L2, later)
+	Src, Dst  int64
+	Weight    float64 // cosine similarity for kind="knn"; LLM confidence for typed edges
+	Kind      string  // "knn" (L1 geometry) | supersedes|contradicts|... (L2 typed)
+	Status    string  // "confirmed" (knn / human-approved) | "proposed" (LLM, awaiting confirm)
+	Rationale string  // L2 only: the digester's one-line reason for the edge
+	Model     string  // L2 only: the model that proposed it
+	UpdatedAt int64   // unix seconds the edge was last written (L2)
 }
 
 // BuildKNNEdges recomputes the deterministic L1 geometry graph: for every doc
@@ -102,7 +106,7 @@ func Neighbors(db *sql.DB, id int64, kind string, limit int) ([]Edge, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	q := `SELECT src, dst, weight, kind FROM edges WHERE src = ?`
+	q := `SELECT src, dst, weight, kind, status, rationale, model, updated_at FROM edges WHERE src = ?`
 	args := []any{id}
 	if kind != "" {
 		q += " AND kind = ?"
@@ -116,13 +120,48 @@ func Neighbors(db *sql.DB, id int64, kind string, limit int) ([]Edge, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanEdges(rows)
+}
+
+func scanEdges(rows *sql.Rows) ([]Edge, error) {
 	var out []Edge
 	for rows.Next() {
 		var e Edge
-		if err := rows.Scan(&e.Src, &e.Dst, &e.Weight, &e.Kind); err != nil {
+		if err := rows.Scan(&e.Src, &e.Dst, &e.Weight, &e.Kind,
+			&e.Status, &e.Rationale, &e.Model, &e.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// TypedNeighbors returns a doc's non-knn (typed L2) edges, strongest first —
+// the semantic relations the digester found, excluding the anonymous kNN
+// geometry. This is what graph-response mode renders as relation chains.
+func TypedNeighbors(db *sql.DB, id int64, limit int) ([]Edge, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.Query(
+		`SELECT src, dst, weight, kind, status, rationale, model, updated_at
+		   FROM edges WHERE src = ? AND kind != 'knn' ORDER BY weight DESC LIMIT ?`,
+		id, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEdges(rows)
+}
+
+// UpsertTypedEdge writes (or replaces) one typed L2 edge with its provenance,
+// via the given transaction. knn edges are written by BuildKNNEdges; this is the
+// digester's write path. Replacing on the (src,dst,kind) key makes a re-digest
+// of the same relation idempotent.
+func UpsertTypedEdge(tx *sql.Tx, e Edge) error {
+	_, err := tx.Exec(
+		`INSERT OR REPLACE INTO edges(src,dst,weight,kind,status,rationale,model,updated_at)
+		 VALUES(?,?,?,?,?,?,?,?)`,
+		e.Src, e.Dst, e.Weight, e.Kind, e.Status, e.Rationale, e.Model, e.UpdatedAt)
+	return err
 }
