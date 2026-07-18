@@ -37,6 +37,7 @@ a fixed enum.
 distill [--db <path>] init
 distill [--db <path>] add    --title <t> --content <c> [--type <t>] [--meta <json>] [--embedding <floats>] [--json]
 distill [--db <path>] add    --file <path.txt|md|pdf>  [--type <t>] [--chunk-size N] [--chunk-overlap N] [--json]
+distill [--db <path>] add    --session <transcript.jsonl> [--embed-model <m>] [--json]   (Claude Code session, per-turn, historical timestamps)
 distill [--db <path>] search --query <q>               [--embedding <floats>] [--mode fts|vec|hybrid|regex] [--metric cosine|l2] [--filter-type <type>] [--limit N] [--json]
 distill [--db <path>] count  [--json]
 distill --version
@@ -146,6 +147,42 @@ The crawl is deliberately scoped and polite:
 Extracted text flows through the same chunker as file ingestion
 (`--chunk-size`/`--chunk-overlap`, `hasRepetitiveRuns` filtering). Embeddings
 are not auto-generated — add them in a follow-up pass if you need vector search.
+
+### add — session transcript (`--session`)
+
+Ingest a **Claude Code session transcript** (`.jsonl`) into a searchable
+knowledge base — turn a conversation into durable, queryable memory:
+
+```bash
+distill add --session ~/.claude/projects/<proj>/<id>.jsonl \
+  --embed-model qwen3-embedding:0.6b
+# ingested 2378 docs from 1694 turns (session.jsonl)
+#   user       261
+#   assistant  927
+#   thinking   1190
+#   span       2026-07-17 11:05 → 2026-07-18 19:05
+```
+
+Each conversational turn becomes one or more docs (long turns are split by the
+shared chunker), typed by **role** so a single transcript yields three separable
+*slices of knowledge*:
+
+| `type` | slice |
+|--------|-------|
+| `user` | your prompts / instructions |
+| `assistant` | the assistant's answers |
+| `thinking` | the assistant's reasoning blocks |
+
+Because the role is the doc `type`, you filter the slice you want:
+`--filter-type thinking` searches only reasoning, `--filter-type assistant`
+only answers (thinking dropped). Provenance (uuid, git branch, model) lands in
+metadata, and the branch doubles as a coarse `topic`.
+
+**Timestamps are preserved.** Each doc's `created_at` is the turn's real time
+(via `AddAt`), not import time — so recency ranking (`--recency-window`) and
+chronology reflect when things were actually said. What's *not* imported:
+`tool_use`/`tool_result` blocks (actions and bulky outputs, not knowledge) and
+the base64 `signature` on thinking blocks (an opaque crypto signature, not text).
 
 ### search
 

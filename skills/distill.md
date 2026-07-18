@@ -80,6 +80,18 @@ dedups identical/versioned pages, and extracts `<main>`/`<article>` text while
 skipping nav/header/footer chrome. Use it to make an external library's docs
 searchable offline. `--max-pages` (default 200) bounds the crawl.
 
+### A past Claude Code session (transcript)
+```bash
+distill add --session ~/.claude/projects/<proj>/<id>.jsonl \
+  --embed-model qwen3-embedding:0.6b --json
+```
+
+Turns a conversation into searchable memory. Each turn is typed by role —
+`user`, `assistant`, `thinking` — so you can search a single slice: `search
+--filter-type thinking` recalls *why* something was decided, `--filter-type
+assistant` recalls *what* was answered. Real timestamps are preserved, so
+`--recency-window` ranks recent turns higher.
+
 ---
 
 ## Phase 3 — Search
