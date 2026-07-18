@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — Stage 1 (ranking + L1 graph)
+
+The knowledge-layer foundation: turn retrieval into a re-scorable, filterable
+index with a deterministic connectivity graph — the substrate the L2 digester
+(distilld) will later enrich.
+
+- **Ranking signals** — new indexed generated columns `priority`/`topic`/
+  `pinned`/`supersedes`. A unified `Search(SearchOpts)` re-scores retrieval with
+  a facet `Filter` (type/role/topic) and `RankOpts`: linear-window recency,
+  numeric priority, per-type priority, pinned boost, role-affinity, and
+  supersession drop. Zero options ⇒ order identical to plain retrieval (opt-in).
+  Wired through every read surface: `distill`/`distill-server` CLI `search`, the
+  MCP `search` tool, and the HTTP `/search` endpoint. `context` gained a topic
+  facet.
+- **Write side** — `ingest`/`record` (CLI + MCP) accept `--topic`/`--priority`/
+  `--pinned`/`--supersedes`; structured JSON records carry them too.
+- **Dense IDs** — every doc has a stable, legible slug (`SPEC-42`) for
+  structured/graph responses.
+- **L1 connectivity graph** — `BuildKNNEdges` compiles a deterministic
+  cosine-kNN graph into an `edges` table (`Neighbors()` reads it); typed L2
+  edges will layer on later.
+- **`distill eval`** — score a golden query set (hit@k + MRR): the retrieval
+  regression net to run before shipping an index and after any ranking change.
+
 ## v0.1.0 - 2026-07-18
 
 Initial release. distill-docs is extracted from the
