@@ -26,7 +26,7 @@ jobs:
     - name: Build cross-platform binaries
       run: |
         mkdir -p dist
-        TOOLS="distill distill-server"
+        TOOLS="distill distill-server distilld"
         # Embed the tag version so released binaries report it via --version.
         LDFLAGS="-s -w -X github.com/ruslano69/distill-docs/internal/version.Version=${{ steps.get_version.outputs.VERSION }}"
 
@@ -48,7 +48,7 @@ jobs:
       run: |
         cd dist
         VER=${{ steps.get_version.outputs.VERSION }}
-        TOOLS="distill distill-server"
+        TOOLS="distill distill-server distilld"
 
         for PLATFORM in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
           FILES=""
@@ -95,6 +95,7 @@ jobs:
           ### Binaries
           - **distill**: knowledge-base CLI — FTS5 + vector hybrid search, file/PDF/web ingest, Ollama auto-embedding
           - **distill-server**: versioned truth server — releases/channels, provenance, MCP + TCP/HTTP, funcfinder code-ingest
+          - **distilld**: background digester daemon — LLM-built typed knowledge graph (supersedes/contradicts/elaborates/...)
         draft: false
         prerelease: false
       env:

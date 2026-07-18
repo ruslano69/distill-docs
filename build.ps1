@@ -1,5 +1,5 @@
 # Build script for distill-docs (PowerShell)
-# Builds: distill, distill-server
+# Builds: distill, distill-server, distilld
 $ErrorActionPreference = "Stop"
 
 $VersionBase = "0.1"
@@ -10,7 +10,8 @@ $LdFlags = "-s -w -X github.com/ruslano69/distill-docs/internal/version.Version=
 
 $Binaries = @(
     @{ Name = "distill";        Cmd = ".\cmd\distill" },
-    @{ Name = "distill-server"; Cmd = ".\cmd\distill-server" }
+    @{ Name = "distill-server"; Cmd = ".\cmd\distill-server" },
+    @{ Name = "distilld";       Cmd = ".\cmd\distilld" }
 )
 
 Write-Host "-> Building distill-docs v$Version..."
