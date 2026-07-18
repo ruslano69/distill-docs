@@ -511,6 +511,7 @@ func runSearch(dbPath string, args []string) {
 	roleAffinity := fs.Float64("role-affinity", 0, "additive boost when role_tags include --role")
 	excludeSuperseded := fs.Bool("exclude-superseded", false, "drop docs another doc supersedes")
 	graph := fs.Int("graph", 0, "graph-aware: annotate each hit with up to N typed L2 relations (0 = off)")
+	cluster := fs.Bool("cluster", false, "collapse duplicate hits into their top-ranked representative")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -553,6 +554,7 @@ func runSearch(dbPath string, args []string) {
 				RoleAffinity: *roleAffinity, ExcludeSuperseded: *excludeSuperseded,
 			},
 			GraphExpand: *graph,
+			Cluster:     *cluster,
 		})
 	}
 	if err != nil {
@@ -690,6 +692,7 @@ func printResults(results []knowledge.Result, asJSON bool) {
 			Superseded   bool           `json:"superseded,omitempty"`
 			Contradicted bool           `json:"contradicted,omitempty"`
 			Relations    []jsonRelation `json:"relations,omitempty"`
+			Folded       []string       `json:"folded,omitempty"`
 		}
 		out := make([]jsonResult, len(results))
 		for i, r := range results {
@@ -713,6 +716,7 @@ func printResults(results []knowledge.Result, asJSON bool) {
 				Superseded:   r.Superseded(),
 				Contradicted: r.Contradicted(),
 				Relations:    rels,
+				Folded:       r.Folded,
 			}
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -730,10 +734,16 @@ func printResults(results []knowledge.Result, asJSON bool) {
 		if r.Contradicted() {
 			warn += "  ⚠ contradicted"
 		}
+		if n := len(r.Folded); n > 0 {
+			warn += fmt.Sprintf("  ⊕ %d dup", n)
+		}
 		// Preview() shows the keyword-in-context snippet when present (rune-safe,
 		// never a byte-slice that could split a multi-byte character), falling
 		// back to a rune-safe content head otherwise.
 		fmt.Printf("[%s] %s  (%s)%s\n    %s\n", r.Slug(), r.Title, r.Type, warn, r.Preview(120))
+		if len(r.Folded) > 0 {
+			fmt.Printf("      ⊕ folds %s (duplicates)\n", strings.Join(r.Folded, ", "))
+		}
 		for _, rel := range r.Relations {
 			arrow := fmt.Sprintf("→ %s → %s", rel.Kind, rel.TargetSlug)
 			if !rel.Outgoing {

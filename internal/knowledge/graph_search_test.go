@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -82,5 +83,44 @@ func TestSearch_GraphExpandAnnotatesRelations(t *testing.T) {
 		if rel.Kind == "supersedes" && (rel.Outgoing || rel.TargetSlug != "SPEC-1") {
 			t.Errorf("SPEC-2 supersedes edge should be incoming from SPEC-1: %+v", rel)
 		}
+	}
+}
+
+func TestSearch_ClusterFoldsDuplicates(t *testing.T) {
+	db := openDB(t)
+	Add(db, "a", "alpha shared token", "spec", "{}", nil)           // SPEC-1
+	Add(db, "b", "alpha shared token", "spec", `{"pinned":1}`, nil) // SPEC-2 (pinned → ranks first)
+	Add(db, "c", "alpha shared token", "spec", "{}", nil)           // SPEC-3
+	// SPEC-2 duplicates both SPEC-1 and SPEC-3.
+	tx, _ := db.Begin()
+	UpsertTypedEdge(tx, Edge{Src: 2, Dst: 1, Weight: 0.9, Kind: "duplicates", Status: "proposed"})
+	UpsertTypedEdge(tx, Edge{Src: 2, Dst: 3, Weight: 0.9, Kind: "duplicates", Status: "proposed"})
+	tx.Commit()
+
+	rank := RankOpts{PinnedBoost: 5} // force SPEC-2 to the top deterministically
+
+	// Without clustering: all three survive.
+	plain, err := Search(db, SearchOpts{Query: "alpha", Mode: "fts", Prefix: true, Limit: 10, Rank: rank})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 3 {
+		t.Fatalf("plain search should return 3 docs, got %d", len(plain))
+	}
+
+	// With clustering: SPEC-2 absorbs its duplicates → one result folding two.
+	clustered, err := Search(db, SearchOpts{Query: "alpha", Mode: "fts", Prefix: true, Limit: 10, Cluster: true, Rank: rank})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clustered) != 1 {
+		t.Fatalf("clustered search should collapse to 1, got %d: %+v", len(clustered), clustered)
+	}
+	if clustered[0].ID != 2 {
+		t.Errorf("survivor should be the pinned SPEC-2, got id %d", clustered[0].ID)
+	}
+	folded := strings.Join(clustered[0].Folded, ",")
+	if !strings.Contains(folded, "SPEC-1") || !strings.Contains(folded, "SPEC-3") {
+		t.Errorf("SPEC-2 should fold SPEC-1 and SPEC-3, got %q", folded)
 	}
 }

@@ -66,6 +66,11 @@ type Result struct {
 	// so a caller can warn that a hit is superseded/contradicted before grounding
 	// on it. Nil when graph expansion is off.
 	Relations []Relation
+	// Folded holds the slugs of lower-ranked results collapsed into this one
+	// because the graph marks them `duplicates` of it (SearchOpts.Cluster). The
+	// duplicates are removed from the result list so the top-N isn't several
+	// copies of one fact; this records what was absorbed. Nil when clustering is off.
+	Folded []string
 }
 
 // Relation is one typed L2 edge incident to a Result, oriented relative to that

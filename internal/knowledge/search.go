@@ -447,6 +447,11 @@ type SearchOpts struct {
 	// (supersedes/contradicts/elaborates/...) incident to it, oriented relative
 	// to the hit. 0 (default) leaves Result.Relations nil — identical to today.
 	GraphExpand int
+	// Cluster collapses results the graph marks as `duplicates` of a
+	// higher-ranked result, folding the lower one away (recorded in
+	// Result.Folded) so the top-N isn't several copies of one fact. Off by
+	// default — the result list is then exactly the ranked order.
+	Cluster bool
 }
 
 // Search is the unified re-scoring entry point (Stage 1). It retrieves a
@@ -454,6 +459,66 @@ type SearchOpts struct {
 // multi-arm results with position-based RRF, drops superseded docs, then folds
 // the recency/priority/type/pinned/role signals onto each candidate's base
 // score. A zero RankOpts leaves the order identical to plain retrieval.
+// clusterByDuplicates collapses results linked by a `duplicates` edge into
+// their highest-ranked member. Ranked input is walked in order; the first time a
+// document is seen it survives and absorbs any of its duplicate peers that are
+// also in the result set and not yet absorbed (recording their slugs in
+// Folded). A higher-ranked duplicate always absorbs a lower one, because the
+// higher is processed first and marks the lower absorbed before it is reached.
+// Only duplicates that both appear in the candidate pool are folded — the goal
+// is de-crowding the result list, not chasing edges out to unretrieved docs.
+func clusterByDuplicates(db *sql.DB, ranked []Result) ([]Result, error) {
+	if len(ranked) < 2 {
+		return ranked, nil
+	}
+	inPool := make(map[int64]bool, len(ranked))
+	slug := make(map[int64]string, len(ranked))
+	for _, r := range ranked {
+		inPool[r.ID] = true
+		slug[r.ID] = r.Slug()
+	}
+
+	rows, err := db.Query(`SELECT src, dst FROM edges WHERE kind='duplicates'`)
+	if err != nil {
+		return nil, err
+	}
+	adj := map[int64][]int64{}
+	for rows.Next() {
+		var s, d int64
+		if err := rows.Scan(&s, &d); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if inPool[s] && inPool[d] && s != d {
+			adj[s] = append(adj[s], d)
+			adj[d] = append(adj[d], s) // duplicates is semantically symmetric
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(adj) == 0 {
+		return ranked, nil
+	}
+
+	absorbed := map[int64]bool{}
+	out := make([]Result, 0, len(ranked))
+	for _, r := range ranked {
+		if absorbed[r.ID] {
+			continue
+		}
+		for _, dup := range adj[r.ID] {
+			if !absorbed[dup] {
+				absorbed[dup] = true
+				r.Folded = append(r.Folded, slug[dup])
+			}
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 func Search(db *sql.DB, o SearchOpts) ([]Result, error) {
 	const rrfK = 60
 	limit := o.Limit
@@ -548,6 +613,18 @@ func Search(db *sql.DB, o SearchOpts) ([]Result, error) {
 		results = append(results, r)
 	}
 	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+
+	// Stage-3 clustering: fold duplicate hits into their highest-ranked
+	// representative before truncating, so a cluster of near-identical docs
+	// occupies one slot in the top-N instead of crowding it out.
+	if o.Cluster {
+		clustered, err := clusterByDuplicates(db, results)
+		if err != nil {
+			return nil, err
+		}
+		results = clustered
+	}
+
 	if len(results) > limit {
 		results = results[:limit]
 	}
