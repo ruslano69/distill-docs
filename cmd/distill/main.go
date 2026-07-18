@@ -205,14 +205,28 @@ func runDigest(dbPath string, args []string) {
 // confidence, status, and the digester's rationale.
 func runGraph(dbPath string, args []string) {
 	fs := flag.NewFlagSet("graph", flag.ExitOnError)
-	slug := fs.String("slug", "", "doc slug to inspect, e.g. SPEC-42 (or pass as first arg)")
+	slug := fs.String("slug", "", "doc slug to inspect, e.g. SPEC-42 (or pass as a bare arg)")
 	limit := fs.Int("limit", 20, "max relations to show")
 	jsonOut := fs.Bool("json", false, "output JSON")
-	fs.Parse(args)
+
+	// Accept the slug as a bare positional in any position. Go's flag package
+	// stops parsing at the first non-flag token, so `graph SPEC-42 --json` would
+	// otherwise silently drop --json. Pull the first bare token out as the slug
+	// and flag-parse the remainder.
+	var positional string
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if positional == "" && a != "" && a[0] != '-' {
+			positional = a
+			continue
+		}
+		rest = append(rest, a)
+	}
+	fs.Parse(rest)
 
 	target := *slug
-	if target == "" && fs.NArg() > 0 {
-		target = fs.Arg(0)
+	if target == "" {
+		target = positional
 	}
 	if target == "" {
 		fatalf("--slug required (e.g. distill graph SPEC-42)")

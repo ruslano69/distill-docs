@@ -68,6 +68,23 @@ func TestRunDigestAndGraph_EndToEnd(t *testing.T) {
 		t.Errorf("graph output should mark the edge proposed:\n%s", g)
 	}
 
+	// --json AFTER the bare slug must still be honored (position-independent slug).
+	gj := captureStdout(t, func() {
+		runGraph(dbPath, []string{"SPEC-2", "--json"})
+	})
+	var payload struct {
+		Slug      string `json:"slug"`
+		Relations []struct {
+			Kind, Target string
+		} `json:"relations"`
+	}
+	if err := json.Unmarshal([]byte(gj), &payload); err != nil {
+		t.Fatalf("graph --json not valid JSON (slug-before-flag dropped --json?): %v\n%s", err, gj)
+	}
+	if payload.Slug != "SPEC-2" || len(payload.Relations) != 1 || payload.Relations[0].Kind != "supersedes" {
+		t.Errorf("graph --json payload wrong: %+v", payload)
+	}
+
 	// A re-digest with no content change is all skips (resumable).
 	out2 := captureStdout(t, func() {
 		runDigest(dbPath, []string{"--model", "fake", "--llm-url", ts.URL, "--rebuild-knn=false"})
