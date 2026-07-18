@@ -28,11 +28,11 @@ func newTestReadServer(t *testing.T) *httptest.Server {
 		t.Fatalf("open write-log: %v", err)
 	}
 	if _, err := knowledge.Add(wl, "Auth spec", "login uses OAuth2 device flow", "spec",
-		metaJSON("ruslan", "backend", "v1", ""), nil); err != nil {
+		metaJSON(docMeta{Author: "ruslan", RoleTags: "backend", SourceVersion: "v1"}), nil); err != nil {
 		t.Fatalf("add doc: %v", err)
 	}
 	if _, err := knowledge.Add(wl, "Deploy runbook", "kubectl rollout restart", "spec",
-		metaJSON("ruslan", "ops", "v1", ""), nil); err != nil {
+		metaJSON(docMeta{Author: "ruslan", RoleTags: "ops", SourceVersion: "v1"}), nil); err != nil {
 		t.Fatalf("add doc: %v", err)
 	}
 	wl.Close()

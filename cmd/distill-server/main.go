@@ -121,21 +121,43 @@ func main() {
 
 // metaJSON builds the metadata blob carried on every document: provenance that
 // the knowledge schema does not model as columns rides here as JSON.
-func metaJSON(author, roleTags, sourceVersion, sourceRef string) string {
-	m := map[string]string{}
-	if author != "" {
-		m["author"] = author
+// docMeta is the provenance + ranking metadata attached to a doc. Zero fields
+// are omitted from the JSON so absent metadata reads as NULL in the generated
+// columns.
+type docMeta struct {
+	Author, RoleTags, SourceVersion, SourceRef, Topic string
+	Priority                                          float64
+	Pinned                                            bool
+	Supersedes                                        int64
+}
+
+func metaJSON(m docMeta) string {
+	out := map[string]any{}
+	if m.Author != "" {
+		out["author"] = m.Author
 	}
-	if roleTags != "" {
-		m["role_tags"] = roleTags
+	if m.RoleTags != "" {
+		out["role_tags"] = m.RoleTags
 	}
-	if sourceVersion != "" {
-		m["source_version"] = sourceVersion
+	if m.SourceVersion != "" {
+		out["source_version"] = m.SourceVersion
 	}
-	if sourceRef != "" {
-		m["source_ref"] = sourceRef
+	if m.SourceRef != "" {
+		out["source_ref"] = m.SourceRef
 	}
-	b, _ := json.Marshal(m)
+	if m.Topic != "" {
+		out["topic"] = m.Topic
+	}
+	if m.Priority != 0 {
+		out["priority"] = m.Priority
+	}
+	if m.Pinned {
+		out["pinned"] = 1
+	}
+	if m.Supersedes != 0 {
+		out["supersedes"] = m.Supersedes
+	}
+	b, _ := json.Marshal(out)
 	return string(b)
 }
 
@@ -166,6 +188,10 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 	chunkSize := fs.Int("chunk-size", 800, "max chunk runes (with --file)")
 	chunkOverlap := fs.Int("chunk-overlap", 80, "chunk overlap runes (with --file)")
 	stripRunes := fs.String("strip-runes", "", "extra junk runes to strip at index time (e.g. an OCR separator glyph: --strip-runes Ω)")
+	topic := fs.String("topic", "", "topic facet for scoping (Stage-1 ranking)")
+	priority := fs.Float64("priority", 0, "numeric priority for rank-by-attribute (Stage-1 ranking)")
+	pinned := fs.Bool("pinned", false, "mark as authoritative/pinned (ranking boost)")
+	supersedes := fs.Int64("supersedes", 0, "id of a doc this one supersedes (drops the old one from results)")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -174,7 +200,8 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 		fatalf("open write-log: %v", err)
 	}
 	defer db.Close()
-	meta := metaJSON(*author, *roleTags, *sourceVersion, "")
+	meta := metaJSON(docMeta{Author: *author, RoleTags: *roleTags, SourceVersion: *sourceVersion,
+		Topic: *topic, Priority: *priority, Pinned: *pinned, Supersedes: *supersedes})
 
 	if *file != "" && strings.EqualFold(filepath.Ext(*file), ".json") {
 		records, err := knowledge.ParseRecordsFile(*file)
@@ -281,6 +308,10 @@ func runRecord(s *truth.Store, emb *embed.Client, args []string) {
 	docType := fs.String("type", "changelog", "changelog|task|decision")
 	sourceRef := fs.String("source-ref", "", "link to the source task/spec this answers")
 	author := fs.String("author", "", "who produced this result")
+	topic := fs.String("topic", "", "topic facet (Stage-1 ranking)")
+	priority := fs.Float64("priority", 0, "numeric priority (Stage-1 ranking)")
+	pinned := fs.Bool("pinned", false, "mark as authoritative/pinned")
+	supersedes := fs.Int64("supersedes", 0, "id of a doc this result supersedes")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -293,7 +324,8 @@ func runRecord(s *truth.Store, emb *embed.Client, args []string) {
 	}
 	defer db.Close()
 
-	meta := metaJSON(*author, "", "", *sourceRef)
+	meta := metaJSON(docMeta{Author: *author, SourceRef: *sourceRef,
+		Topic: *topic, Priority: *priority, Pinned: *pinned, Supersedes: *supersedes})
 	id, err := knowledge.Add(db, *title, *result, *docType, meta, embedOrNil(emb, *result))
 	if err != nil {
 		fatalf("record: %v", err)
@@ -474,6 +506,16 @@ func runSearch(s *truth.Store, embc *embed.Client, args []string) {
 	embeddingRaw := fs.String("embedding", "", "comma-separated float32 for vec/hybrid (BYO; overrides --embed-model)")
 	limit := fs.Int("limit", 10, "max results")
 	prefix := fs.Bool("prefix", true, "auto-append wildcard to FTS tokens")
+	// facet filters + ranking signals (Stage-1); all optional, zero = off.
+	typ := fs.String("type", "", "scope to a doc type")
+	topic := fs.String("topic", "", "scope to a topic facet")
+	role := fs.String("role", "", "scope to (and, with --role-affinity, boost) a role")
+	recencyWindow := fs.Duration("recency-window", 0, "linear recency window, e.g. 720h (0 = off)")
+	recencyWeight := fs.Float64("recency-weight", 0, "recency boost weight")
+	priorityWeight := fs.Float64("priority-weight", 0, "weight on the numeric priority attribute")
+	pinnedBoost := fs.Float64("pinned-boost", 0, "additive boost for pinned docs")
+	roleAffinity := fs.Float64("role-affinity", 0, "additive boost when a doc's role_tags include --role")
+	excludeSuperseded := fs.Bool("exclude-superseded", false, "drop docs another doc supersedes")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -499,18 +541,22 @@ func runSearch(s *truth.Store, embc *embed.Client, args []string) {
 		}
 	}
 	var results []knowledge.Result
-	switch *mode {
-	case "fts":
-		results, err = knowledge.SearchFTS(db, *query, *limit, *prefix)
-	case "vec":
-		if len(emb) == 0 {
-			fatalf("--embedding required for vec mode")
+	if *mode == "regex" {
+		results, err = knowledge.SearchRegex(db, *query, *limit, *typ)
+	} else {
+		if *mode == "vec" && len(emb) == 0 {
+			fatalf("--embedding (or --embed-model) required for vec mode")
 		}
-		results, err = knowledge.SearchVec(db, emb, *limit, knowledge.MetricCosine, "")
-	case "regex":
-		results, err = knowledge.SearchRegex(db, *query, *limit, "")
-	default:
-		results, err = knowledge.SearchHybrid(db, *query, emb, *limit, knowledge.MetricCosine, "", *prefix)
+		results, err = knowledge.Search(db, knowledge.SearchOpts{
+			Query: *query, Embedding: emb, Mode: *mode, Metric: knowledge.MetricCosine,
+			Limit: *limit, Prefix: *prefix,
+			Filter: knowledge.Filter{Type: *typ, Role: *role, Topic: *topic},
+			Rank: knowledge.RankOpts{
+				RecencyWindow: *recencyWindow, RecencyWeight: *recencyWeight,
+				PriorityWeight: *priorityWeight, PinnedBoost: *pinnedBoost,
+				RoleAffinity: *roleAffinity, ExcludeSuperseded: *excludeSuperseded,
+			},
+		})
 	}
 	if err != nil {
 		fatalf("search: %v", err)

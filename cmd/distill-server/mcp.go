@@ -207,6 +207,18 @@ func argInt64(args map[string]any, key string, def int64) int64 {
 	return def
 }
 
+func argFloat(args map[string]any, key string, def float64) float64 {
+	if v, ok := args[key].(float64); ok {
+		return v
+	}
+	return def
+}
+
+func argBool(args map[string]any, key string) bool {
+	v, _ := args[key].(bool)
+	return v
+}
+
 func argFloats(args map[string]any, key string) []float32 {
 	raw, ok := args[key].([]any)
 	if !ok {
@@ -401,8 +413,12 @@ func (m *mcpServer) toolIngest(args map[string]any) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	meta := metaJSON(argStr(args, "author", ""), argStr(args, "role_tags", ""),
-		argStr(args, "source_version", ""), "")
+	meta := metaJSON(docMeta{
+		Author: argStr(args, "author", ""), RoleTags: argStr(args, "role_tags", ""),
+		SourceVersion: argStr(args, "source_version", ""), Topic: argStr(args, "topic", ""),
+		Priority: argFloat(args, "priority", 0), Pinned: argBool(args, "pinned"),
+		Supersedes: argInt64(args, "supersedes", 0),
+	})
 	id, err := knowledge.Add(db, title, content, argStr(args, "type", "general"), meta, argFloats(args, "embedding"))
 	if err != nil {
 		return "", err
@@ -424,7 +440,9 @@ func (m *mcpServer) toolRecord(args map[string]any) (string, error) {
 	}
 	defer db.Close()
 	id, err := knowledge.Add(db, title, result, argStr(args, "type", "changelog"),
-		metaJSON(author, "", "", sourceRef), nil)
+		metaJSON(docMeta{Author: author, SourceRef: sourceRef, Topic: argStr(args, "topic", ""),
+			Priority: argFloat(args, "priority", 0), Pinned: argBool(args, "pinned"),
+			Supersedes: argInt64(args, "supersedes", 0)}), nil)
 	if err != nil {
 		return "", err
 	}

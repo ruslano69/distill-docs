@@ -9,15 +9,19 @@ import (
 
 // TestMetaJSON pins the provenance blob shape that ingest/record attach to docs.
 func TestMetaJSON(t *testing.T) {
-	got := metaJSON("ruslan", "backend,api", "v3", "")
-	// order-independent membership check via a fresh parse would be ideal, but
+	got := metaJSON(docMeta{Author: "ruslan", RoleTags: "backend,api", SourceVersion: "v3"})
 	// json.Marshal of a map sorts keys, so this is stable.
 	want := `{"author":"ruslan","role_tags":"backend,api","source_version":"v3"}`
 	if got != want {
 		t.Fatalf("metaJSON = %s, want %s", got, want)
 	}
-	if empty := metaJSON("", "", "", ""); empty != "{}" {
+	if empty := metaJSON(docMeta{}); empty != "{}" {
 		t.Fatalf("empty metaJSON = %s, want {}", empty)
+	}
+	// ranking signals: pinned serializes as 1, priority numeric, topic string.
+	full := metaJSON(docMeta{Topic: "auth", Priority: 0.5, Pinned: true, Supersedes: 7})
+	if full != `{"pinned":1,"priority":0.5,"supersedes":7,"topic":"auth"}` {
+		t.Fatalf("ranking metaJSON = %s", full)
 	}
 }
 
@@ -50,13 +54,13 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("open write-log: %v", err)
 	}
 	id, err := knowledge.Add(wl, "Auth spec", "OAuth2 device flow", "spec",
-		metaJSON("ruslan", "backend", "v1", ""), nil)
+		metaJSON(docMeta{Author: "ruslan", RoleTags: "backend", SourceVersion: "v1"}), nil)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
 	// record with provenance
 	rid, err := knowledge.Add(wl, "Decision", "use WAL", "decision",
-		metaJSON("ruslan", "", "", "spec:Auth"), nil)
+		metaJSON(docMeta{Author: "ruslan", SourceRef: "spec:Auth"}), nil)
 	if err != nil {
 		t.Fatalf("record add: %v", err)
 	}
