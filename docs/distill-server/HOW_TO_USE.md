@@ -184,3 +184,19 @@ without them (a throwaway Go script, a raw grep) — the gap only became visible
 by hitting it, which is itself worth remembering: if you catch yourself
 reaching for ad-hoc SQL or shell plumbing around `distill-server`, that's a
 signal a primitive is missing, not that the workflow is wrong.
+
+## Before you ingest: set corpus defaults once
+
+How a corpus is chunked and cleaned should be **constant across every ingest** —
+mixing `--chunk-size 800` and `500` makes the index inhomogeneous and retrieval
+unpredictable. Set the invariants once instead of repeating flags:
+
+```bash
+distill-server config --chunk-size 800 --chunk-overlap 80 --strip-runes Ω \
+                      --type reference --role-tags backend
+distill-server config          # no flags → print the current settings
+```
+
+`ingest` reads these as defaults; an explicit `ingest` flag still overrides for a
+one-off. Settings live in the write-log and ride into published releases (VACUUM
+INTO), so a release records how its corpus was formatted.

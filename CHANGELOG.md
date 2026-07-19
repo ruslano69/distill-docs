@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — shared document-metadata binder
+## Unreleased — shared metadata binder + per-corpus settings
 
 - **`internal/docmeta`** — one home for a document's provenance + Stage-1 ranking
   metadata (`Meta`, `JSON`, `Merge`, `RegisterRankFlags`). Both binaries now bind
@@ -10,6 +10,15 @@
   `--meta '{...}'`). `--meta` remains a raw base that the structured flags overlay
   (`--meta '{"source":"manual"}' --topic go` → `{"source":"manual","topic":"go"}`),
   so single-file `distill` and `distill-server` now share one metadata contract.
+- **Per-corpus ingest settings** — a `settings` table in the knowledge DB stores
+  ingest defaults so corpus invariants (`chunk-size`/`chunk-overlap`/`strip-runes`)
+  and batch defaults (`type`/`role-tags`/`author`/`source-version`) are set once
+  instead of repeated on every ingest — keeping the index homogeneous. New
+  `distill config` / `distill-server config` set or print them; an explicit
+  `add`/`ingest` flag still overrides per call (flag > setting > default, via
+  `knowledge.FlagResolver`). Settings ride into releases through VACUUM INTO as
+  provenance. Single-file `distill` file/web/single ingest now also applies
+  index-time normalization (`--strip-runes`), matching `distill-server`.
 
 ## v0.4.0 — 2026-07-19 · Stage 3 + server parity (the graph, everywhere)
 
