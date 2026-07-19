@@ -39,7 +39,24 @@ Idempotent — safe to call at the start of every session.
 
 ---
 
-## Phase 2 — Add knowledge
+## Phase 2 — Corpus setup (optional, once)
+
+Some `add` flags are **corpus invariants** — how *this* base is chunked and
+cleaned should be constant across every ingest, not decided per call. Set them
+once instead of repeating on every `add`:
+
+```bash
+distill config --chunk-size 500 --strip-runes Ω --type manual --author ruslan
+distill config   # no flags → print the current settings
+```
+
+An explicit flag on `add` still overrides the stored setting for that one
+call (flag > setting > built-in default). Skip this phase entirely for casual
+use — `add` works fine with just built-in defaults.
+
+---
+
+## Phase 3 — Add knowledge
 
 ### A single note or finding
 ```bash
@@ -94,7 +111,7 @@ assistant` recalls *what* was answered. Real timestamps are preserved, so
 
 ---
 
-## Phase 3 — Search
+## Phase 4 — Search
 
 ```bash
 # Keyword search (fast, no embedding needed)
@@ -112,17 +129,23 @@ distill search --query "<natural language>" --mode vec --embed-model qwen3-embed
 
 # Semantic search with a precomputed vector (BYO)
 distill search --embedding "0.1,0.2,..." --mode vec --json
+
+# Graph-aware: annotate hits with typed relations + fold duplicates (needs Phase 6)
+distill search --query "<keywords>" --graph 4 --cluster --json
 ```
 
 `--mode fts` (or the `hybrid` default without an embedding) covers the
 overwhelming majority of "do we already know X" lookups. Reach for `regex`
 when FTS tokenization won't match what you need (e.g. an exact error code).
 Reach for `vec`/`hybrid` with embeddings only when you have a real embedding
-model wired into the session — otherwise it's a no-op.
+model wired into the session — otherwise it's a no-op. `--graph N` warns when
+a hit is `⚠ superseded`/`⚠ contradicted` by another doc — check this before
+citing a hit as current truth; `--cluster` collapses near-duplicate hits so
+the top-N isn't several copies of one fact.
 
 ---
 
-## Phase 4 — Sanity check
+## Phase 5 — Sanity check
 
 ```bash
 distill count --json
@@ -132,7 +155,7 @@ Confirms the knowledge base isn't empty before relying on search results.
 
 ---
 
-## Phase 5 — Knowledge graph (optional, needs a local LLM)
+## Phase 6 — Knowledge graph (optional, needs a local LLM)
 
 Once a base has vectors and enough related docs, build the **L2 typed graph** so
 you can ask *how* documents relate, not just which are similar:
