@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased — digester direction/confidence fix
+## v0.4.1 — 2026-07-19
+
+### Digester direction/confidence fix
 
 - **Fixed two related digester correctness bugs** found live against
   `gemma4:12b` on a real supersedes case: (1) the classify prompt could invert
@@ -26,7 +28,7 @@
   static-key spec, with confidence populated, and `search --graph` renders the
   `⚠ superseded` banner on the right document.
 
-## Unreleased — shared metadata binder + per-corpus settings
+### Shared metadata binder + per-corpus settings
 
 - **`internal/docmeta`** — one home for a document's provenance + Stage-1 ranking
   metadata (`Meta`, `JSON`, `Merge`, `RegisterRankFlags`). Both binaries now bind
