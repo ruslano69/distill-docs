@@ -64,15 +64,59 @@ func validKind(k string) bool {
 
 // Relation is the digester's read on an ordered doc pair (A, B): what relation,
 // in which direction, how confident, and why. It maps directly to a typed edge.
+// (Not itself the JSON decode target — see rawRelation in Classify.)
 type Relation struct {
-	Kind       string  `json:"kind"`       // one of Kinds, or "none"
-	Direction  string  `json:"direction"`  // "a_to_b" | "b_to_a" (ignored when kind=none)
-	Confidence float64 `json:"confidence"` // 0..1
-	Rationale  string  `json:"rationale"`  // one line, human-readable
+	Kind       string  // one of Kinds, or "none"
+	Direction  string  // "a_to_b" | "b_to_a" (ignored when kind=none)
+	Confidence float64 // 0..1
+	Rationale  string  // one line, human-readable
 }
 
-const systemPrompt = `You are a knowledge-graph relation classifier. Given two documents A and B, decide whether one has a specific relationship to the other, using ONLY this vocabulary:
-- supersedes: one document makes the other obsolete or replaces it (e.g. a newer spec/decision overriding an older one)
+// rawRelation is the wire shape of the LLM's answer, with Confidence as a
+// pointer so Classify can tell "field absent" from "field explicitly 0" — a
+// distinction that matters because a missing confidence must not silently
+// become a real 0 (which would make a correct classification vanish below any
+// confidence threshold). relationSchema's "required" list is the primary
+// defense (it grammar-constrains the endpoint to always include the field);
+// this pointer is the fallback in case an endpoint honors "required" loosely.
+type rawRelation struct {
+	Rationale  string   `json:"rationale"`
+	Kind       string   `json:"kind"`
+	Direction  string   `json:"direction"`
+	Confidence *float64 `json:"confidence"`
+}
+
+// relationSchema is the JSON Schema sent as Ollama's structured-output format
+// (see llm.Client.GenerateJSON), built from Kinds so the taxonomy has one
+// source of truth. Unlike the bare "json" mode, a schema's "required" list
+// grammar-constrains generation to include every listed field — the fix for
+// the observed failure mode where a model, under loose "json" mode, ended its
+// answer after "direction" and never emitted "confidence" at all.
+var relationSchema = buildRelationSchema()
+
+func buildRelationSchema() json.RawMessage {
+	kinds := make([]string, 0, len(Kinds)+1)
+	kinds = append(kinds, Kinds...)
+	kinds = append(kinds, KindNone)
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"rationale":  map[string]any{"type": "string"},
+			"kind":       map[string]any{"type": "string", "enum": kinds},
+			"direction":  map[string]any{"type": "string", "enum": []string{"a_to_b", "b_to_a"}},
+			"confidence": map[string]any{"type": "number"},
+		},
+		"required": []string{"rationale", "kind", "direction", "confidence"},
+	}
+	b, err := json.Marshal(schema)
+	if err != nil {
+		panic("digest: relationSchema must marshal: " + err.Error()) // unreachable: static input
+	}
+	return b
+}
+
+const systemPrompt = `You are a knowledge-graph relation classifier. Given two documents A and B — each shown with the date it was added to the knowledge base — decide whether one has a specific relationship to the other, using ONLY this vocabulary:
+- supersedes: one document replaces the other or renders it obsolete. Base this ONLY on explicit textual evidence in the SUPERSEDING document — words like "deprecated", "no longer used", "replaces X", "now use Y instead", a decision explicitly overriding an earlier one. The document that CONTAINS that deprecation/replacement language is the one that supersedes; the other is superseded. The added-date is a secondary tiebreaker only — never the primary signal, and a later date alone is NOT evidence of supersedence.
 - contradicts: the two documents make conflicting claims
 - elaborates: one document adds detail, depth, or examples to the other
 - depends_on: one document requires the other to hold or make sense
@@ -80,8 +124,13 @@ const systemPrompt = `You are a knowledge-graph relation classifier. Given two d
 - same_topic: they concern the same subject but with no stronger relation
 - none: no meaningful relationship
 
-Return STRICT JSON: {"kind":"<one of the above>","direction":"a_to_b"|"b_to_a","confidence":<0..1>,"rationale":"<short reason>"}.
-"direction" names the subject→object order (a_to_b means "A <kind> B"). For symmetric kinds (contradicts, duplicates, same_topic) use a_to_b. Prefer "none" when unsure; be conservative with "supersedes".`
+Example: if Document A says "Sort accepts a comparator argument" and Document B says "Sort's comparator argument is removed; use SortBy instead", B supersedes A because B contains the removal language:
+{"rationale":"B explicitly says the comparator argument is removed and replaced by SortBy","kind":"supersedes","direction":"b_to_a","confidence":0.9}
+
+Think it through, then respond with STRICT JSON only, in exactly this field order:
+{"rationale":"<one sentence: which document is the subject and the specific textual evidence for it>","kind":"<one of the above>","direction":"a_to_b"|"b_to_a","confidence":<0..1>}
+
+"direction" names the subject→object order (a_to_b means "A <kind> B") and MUST match the document you named as the subject in your rationale — never assert a direction that contradicts your own rationale. For symmetric kinds (contradicts, duplicates, same_topic) use a_to_b. Prefer "none" when unsure; be especially conservative with "supersedes" — only assert it when your rationale can cite explicit replacement/deprecation language.`
 
 // docBudget caps how much of each document body goes into the prompt — chunks
 // are already small, but a stray large record shouldn't blow the context.
@@ -95,39 +144,57 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+// formatAddedDate renders a doc's CreatedAt as a short date for the prompt's
+// secondary temporal signal (see systemPrompt: content evidence is primary, the
+// date only breaks ties). A zero timestamp (no CreatedAt available) renders as
+// "unknown" rather than the 1970 epoch, so the model doesn't mistake it for data.
+func formatAddedDate(unixSeconds int64) string {
+	if unixSeconds <= 0 {
+		return "unknown"
+	}
+	return time.Unix(unixSeconds, 0).UTC().Format("2006-01-02")
+}
+
 func buildPrompt(a, b knowledge.Doc) string {
-	return fmt.Sprintf("Document A (%s, type=%s):\nTitle: %s\n%s\n\nDocument B (%s, type=%s):\nTitle: %s\n%s",
-		a.Slug(), a.Type, a.Title, truncate(a.Content, docBudget),
-		b.Slug(), b.Type, b.Title, truncate(b.Content, docBudget))
+	return fmt.Sprintf("Document A (%s, type=%s, added=%s):\nTitle: %s\n%s\n\nDocument B (%s, type=%s, added=%s):\nTitle: %s\n%s",
+		a.Slug(), a.Type, formatAddedDate(a.CreatedAt), a.Title, truncate(a.Content, docBudget),
+		b.Slug(), b.Type, formatAddedDate(b.CreatedAt), b.Title, truncate(b.Content, docBudget))
 }
 
 // Classify asks the LLM for the relation between ordered docs A and B. It
 // validates the kind against the taxonomy (unknown → none), clamps confidence,
-// and normalizes direction. A transport/parse failure is returned as an error
-// so the caller can decide whether to abort the pass or skip the pair.
+// and normalizes direction. A transport/parse failure — including a asserted
+// relation (kind != none) with no confidence field — is returned as an error so
+// the caller retries the pair rather than recording a wrong or absent answer as
+// final (see Run: an error leaves the pair unstamped in digest_state).
 func Classify(ctx context.Context, client *llm.Client, a, b knowledge.Doc) (Relation, error) {
-	raw, err := client.GenerateJSON(ctx, systemPrompt, buildPrompt(a, b))
+	raw, err := client.GenerateJSON(ctx, systemPrompt, buildPrompt(a, b), relationSchema)
 	if err != nil {
 		return Relation{}, err
 	}
-	var rel Relation
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &rel); err != nil {
+	var rr rawRelation
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &rr); err != nil {
 		return Relation{}, fmt.Errorf("parse relation JSON %q: %w", truncate(raw, 200), err)
 	}
-	rel.Kind = strings.ToLower(strings.TrimSpace(rel.Kind))
-	if rel.Kind == "" || rel.Kind == KindNone || !validKind(rel.Kind) {
+	kind := strings.ToLower(strings.TrimSpace(rr.Kind))
+	if kind == "" || kind == KindNone || !validKind(kind) {
 		return Relation{Kind: KindNone}, nil
 	}
-	if rel.Direction != "b_to_a" {
-		rel.Direction = "a_to_b"
+	if rr.Confidence == nil {
+		return Relation{}, fmt.Errorf("relation %q missing required confidence field in %q", kind, truncate(raw, 200))
 	}
-	if rel.Confidence < 0 {
-		rel.Confidence = 0
+	direction := rr.Direction
+	if direction != "b_to_a" {
+		direction = "a_to_b"
 	}
-	if rel.Confidence > 1 {
-		rel.Confidence = 1
+	confidence := *rr.Confidence
+	if confidence < 0 {
+		confidence = 0
 	}
-	return rel, nil
+	if confidence > 1 {
+		confidence = 1
+	}
+	return Relation{Kind: kind, Direction: direction, Confidence: confidence, Rationale: rr.Rationale}, nil
 }
 
 // Options tunes a digest pass.

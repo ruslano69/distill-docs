@@ -27,16 +27,16 @@ func TestGenerateJSON_ReturnsResponse(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL, "test-model")
-	out, err := c.GenerateJSON(context.Background(), "you classify", "A vs B")
+	out, err := c.GenerateJSON(context.Background(), "you classify", "A vs B", nil)
 	if err != nil {
 		t.Fatalf("GenerateJSON: %v", err)
 	}
 	if out != `{"kind":"supersedes","confidence":0.9}` {
 		t.Errorf("response = %q", out)
 	}
-	// The client must ask for deterministic, JSON-constrained output.
-	if seen.Format != "json" {
-		t.Errorf("Format = %q, want json", seen.Format)
+	// A nil schema falls back to the bare "json" mode (merely-valid-JSON).
+	if string(seen.Format) != `"json"` {
+		t.Errorf("Format = %s, want \"json\"", seen.Format)
 	}
 	if seen.Stream {
 		t.Errorf("Stream should be false")
@@ -49,8 +49,23 @@ func TestGenerateJSON_ReturnsResponse(t *testing.T) {
 	}
 }
 
+func TestGenerateJSON_WithSchema_SendsSchemaAsFormat(t *testing.T) {
+	var seen generateRequest
+	schema := json.RawMessage(`{"type":"object","required":["kind","confidence"]}`)
+	ts := fakeGenServer(t, `{}`, &seen)
+	defer ts.Close()
+
+	c := New(ts.URL, "test-model")
+	if _, err := c.GenerateJSON(context.Background(), "sys", "p", schema); err != nil {
+		t.Fatalf("GenerateJSON: %v", err)
+	}
+	if string(seen.Format) != string(schema) {
+		t.Errorf("Format = %s, want the schema forwarded verbatim: %s", seen.Format, schema)
+	}
+}
+
 func TestGenerateJSON_DisabledClient(t *testing.T) {
-	if _, err := New("", "").GenerateJSON(context.Background(), "", "x"); err == nil {
+	if _, err := New("", "").GenerateJSON(context.Background(), "", "x", nil); err == nil {
 		t.Error("disabled client should error")
 	}
 }
@@ -60,7 +75,7 @@ func TestGenerateJSON_EndpointError(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"error": "model not found"})
 	}))
 	defer ts.Close()
-	if _, err := New(ts.URL, "m").GenerateJSON(context.Background(), "", "x"); err == nil {
+	if _, err := New(ts.URL, "m").GenerateJSON(context.Background(), "", "x", nil); err == nil {
 		t.Error("endpoint error field should surface as an error")
 	}
 }

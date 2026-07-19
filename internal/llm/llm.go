@@ -45,12 +45,18 @@ func New(url, model string) *Client {
 func (c *Client) Enabled() bool { return c != nil && c.Model != "" }
 
 type generateRequest struct {
-	Model   string         `json:"model"`
-	Prompt  string         `json:"prompt"`
-	System  string         `json:"system,omitempty"`
-	Stream  bool           `json:"stream"`
-	Format  string         `json:"format,omitempty"` // "json" constrains output to valid JSON
-	Options map[string]any `json:"options,omitempty"`
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	System string `json:"system,omitempty"`
+	Stream bool   `json:"stream"`
+	// Format is Ollama's structured-output control: the bare string "json"
+	// only constrains output to be syntactically valid JSON (a model can still
+	// omit fields it judges "answered enough" — the missing-fields fix that
+	// motivated Schema below). A full JSON Schema object instead grammar-
+	// constrains generation so every field in the schema's "required" list is
+	// forced into the output, regardless of the model's own judgment.
+	Format  json.RawMessage `json:"format,omitempty"`
+	Options map[string]any  `json:"options,omitempty"`
 }
 
 type generateResponse struct {
@@ -58,20 +64,30 @@ type generateResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
+var jsonFormat = json.RawMessage(`"json"`)
+
 // GenerateJSON runs the prompt (with an optional system preamble) at
-// temperature 0 and asks the endpoint to constrain output to valid JSON,
-// returning the raw response string for the caller to unmarshal. Deterministic
-// (temp 0) so a re-digest of unchanged content is reproducible.
-func (c *Client) GenerateJSON(ctx context.Context, system, prompt string) (string, error) {
+// temperature 0, returning the raw response string for the caller to
+// unmarshal. Deterministic (temp 0) so a re-digest of unchanged content is
+// reproducible. schema is optional: nil constrains output to merely-valid JSON
+// (the caller must tolerate missing fields); a non-nil JSON Schema object (with
+// a "required" list) grammar-constrains the endpoint to include every required
+// field, which loose "json" mode does not guarantee — some models end the
+// object early once they consider the answer "complete enough".
+func (c *Client) GenerateJSON(ctx context.Context, system, prompt string, schema json.RawMessage) (string, error) {
 	if !c.Enabled() {
 		return "", fmt.Errorf("llm disabled (no model configured)")
+	}
+	format := jsonFormat
+	if len(schema) > 0 {
+		format = schema
 	}
 	body, err := json.Marshal(generateRequest{
 		Model:   c.Model,
 		Prompt:  prompt,
 		System:  system,
 		Stream:  false,
-		Format:  "json",
+		Format:  format,
 		Options: map[string]any{"temperature": 0},
 	})
 	if err != nil {
