@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Stage 3 + server parity (the graph, everywhere)
+## v0.4.0 — 2026-07-19 · Stage 3 + server parity (the graph, everywhere)
 
 Wire the L2 knowledge graph into retrieval, and bring the whole graph surface
 (build + read) to the agent-facing `distill-server` — until now it existed only
