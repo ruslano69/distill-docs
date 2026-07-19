@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,11 +21,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ruslano69/distill-docs/internal/version"
 	"github.com/ruslano69/distill-docs/internal/codemap"
+	"github.com/ruslano69/distill-docs/internal/digest"
 	"github.com/ruslano69/distill-docs/internal/embed"
 	"github.com/ruslano69/distill-docs/internal/knowledge"
+	"github.com/ruslano69/distill-docs/internal/llm"
 	"github.com/ruslano69/distill-docs/internal/truth"
+	"github.com/ruslano69/distill-docs/internal/version"
 )
 
 func main() {
@@ -52,6 +55,7 @@ func main() {
 		"set-channel": true, "channels": true, "releases": true, "search": true,
 		"suggest": true, "read": true, "enumerate": true, "provenance": true, "context": true,
 		"diff": true, "serve": true, "serve-http": true, "mcp": true,
+		"digest": true, "graph": true,
 	}
 	var preAction, postAction []string
 	action := ""
@@ -116,6 +120,158 @@ func main() {
 		runServeHTTP(store, emb, postAction)
 	case "mcp":
 		runMCP(store, emb, postAction)
+	case "digest":
+		runDigestServer(store, postAction)
+	case "graph":
+		runGraphServer(store, postAction)
+	}
+}
+
+// runDigestServer builds the L2 typed knowledge graph over the write-log (the
+// live, mutable truth), so a subsequent `publish` bakes the edges into the
+// immutable release via VACUUM INTO. This is the server-side face of the
+// single-file `distill digest`: an admin/CI build step, not an agent grounding
+// call. Requires --model and vectors already stored (--embed-model at ingest).
+func runDigestServer(s *truth.Store, args []string) {
+	fs := flag.NewFlagSet("digest", flag.ExitOnError)
+	model := fs.String("model", "", "Ollama generate model for classification (e.g. gemma4:12b) — required")
+	llmURL := fs.String("llm-url", llm.DefaultURL, "generate endpoint")
+	k := fs.Int("k", 5, "neighbors per doc considered as relation candidates")
+	minConf := fs.Float64("min-confidence", 0.5, "drop proposed edges below this confidence")
+	limit := fs.Int("limit", 0, "stop after classifying this many pairs (0 = all)")
+	rebuildKNN := fs.Bool("rebuild-knn", true, "rebuild the kNN geometry before digesting")
+	jsonOut := fs.Bool("json", false, "output JSON")
+	fs.Parse(args)
+
+	if *model == "" {
+		fatalf("--model required (e.g. --model gemma4:12b)")
+	}
+	db, err := knowledge.Open(s.WriteLogPath())
+	if err != nil {
+		fatalf("open write-log: %v", err)
+	}
+	defer db.Close()
+
+	client := digest.LLMClassifier{Client: llm.New(*llmURL, *model)}
+	if !*jsonOut {
+		fmt.Fprintf(os.Stderr, "digesting the write-log with %s (k=%d, min-confidence=%.2f)…\n", *model, *k, *minConf)
+	}
+	rep, err := digest.Run(context.Background(), db, client, digest.Options{
+		K: *k, MinConfidence: *minConf, EnsureKNN: *rebuildKNN, Limit: *limit,
+	})
+	if err != nil {
+		fatalf("digest: %v", err)
+	}
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(map[string]any{
+			"candidates": rep.Candidates, "skipped": rep.Skipped, "classified": rep.Classified,
+			"edges_written": rep.EdgesWritten, "errors": rep.Errors, "by_kind": rep.ByKind,
+		})
+		return
+	}
+	fmt.Printf("digest: %d candidates, %d skipped (clean), %d classified, %d edges written",
+		rep.Candidates, rep.Skipped, rep.Classified, rep.EdgesWritten)
+	if rep.Errors > 0 {
+		fmt.Printf(", %d errors", rep.Errors)
+	}
+	fmt.Println()
+	for _, kind := range digest.Kinds {
+		if n := rep.ByKind[kind]; n > 0 {
+			fmt.Printf("  %-12s %d\n", kind, n)
+		}
+	}
+	if rep.Candidates == 0 {
+		fmt.Fprintln(os.Stderr, "note: no candidates — the kNN geometry is empty (ingest with --embed-model to store vectors)")
+	} else {
+		fmt.Fprintln(os.Stderr, "note: edges live in the write-log — run `publish` to bake them into a release")
+	}
+}
+
+// runGraphServer prints one document's typed relations from a release (or the
+// write-log) — the server-side face of `distill graph`, for admin/CI inspection.
+func runGraphServer(s *truth.Store, args []string) {
+	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	slug := fs.String("slug", "", "doc slug to inspect, e.g. SPEC-42 (or pass as a bare arg)")
+	channel := fs.String("channel", truth.ChannelStable, "stable|testing|unstable or a release version")
+	limit := fs.Int("limit", 20, "max relations to show")
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	var positional string
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if positional == "" && a != "" && a[0] != '-' {
+			positional = a
+			continue
+		}
+		rest = append(rest, a)
+	}
+	fs.Parse(rest)
+
+	target := *slug
+	if target == "" {
+		target = positional
+	}
+	if target == "" {
+		fatalf("--slug required (e.g. distill-server graph SPEC-42)")
+	}
+	id, err := knowledge.ParseSlugID(target)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	path, err := s.Resolve(*channel)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	db, err := truth.OpenRelease(path)
+	if err != nil {
+		fatalf("open release: %v", err)
+	}
+	defer db.Close()
+
+	doc, err := knowledge.DocByID(db, id)
+	if err != nil {
+		fatalf("load %s: %v", target, err)
+	}
+	edges, err := knowledge.TypedNeighbors(db, id, *limit)
+	if err != nil {
+		fatalf("graph: %v", err)
+	}
+
+	if *jsonOut {
+		type rel struct {
+			Kind, Status, Target, Rationale, Model string
+			Confidence                             float64
+		}
+		rels := make([]rel, 0, len(edges))
+		for _, e := range edges {
+			dst, _ := knowledge.DocByID(db, e.Dst)
+			rels = append(rels, rel{e.Kind, e.Status, dst.Slug(), e.Rationale, e.Model, e.Weight})
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(map[string]any{"slug": doc.Slug(), "channel": *channel, "title": doc.Title, "relations": rels})
+		return
+	}
+
+	fmt.Printf("%s  %s  (%s)\n", doc.Slug(), doc.Title, *channel)
+	if len(edges) == 0 {
+		fmt.Println("  (no typed relations — run `digest` then `publish`)")
+		return
+	}
+	for _, e := range edges {
+		dst, err := knowledge.DocByID(db, e.Dst)
+		label := fmt.Sprintf("id-%d", e.Dst)
+		if err == nil {
+			label = fmt.Sprintf("%s %s", dst.Slug(), dst.Title)
+		}
+		fmt.Printf("  → %-12s → %s  [%s, %.2f]\n", e.Kind, label, e.Status, e.Weight)
+		if e.Rationale != "" {
+			fmt.Printf("      %q\n", e.Rationale)
+		}
 	}
 }
 
@@ -889,9 +1045,11 @@ Rewrite (truth flows in):
   freeze      --release <ver>   (open the stabilization window; further fixes go to unstable)
   prune       --keep <n>   (retain the newest N releases, delete the rest — channel-pinned releases are never pruned — FR-15)
   set-channel --name stable|testing --release <ver>
+  digest      --model <ollama> [--k --min-confidence --limit --rebuild-knn]   (build the L2 typed knowledge graph over the write-log; publish bakes it into a release)
 
 Readonly (grounding):
-  search      --query <q> [--channel stable|testing|unstable|<ver>] [--mode --embedding --limit]
+  search      --query <q> [--channel stable|testing|unstable|<ver>] [--mode --embedding --limit --graph N --cluster]
+  graph       <SLUG> [--channel <c> --limit N]   (one doc's typed relations: supersedes/contradicts/elaborates/...)
   suggest     --prefix <p> [--channel <c> --relative-to <type> --numbers --limit N]   (FTS vocabulary + IDF; pure-digit tokens filtered unless --numbers)
   read        --id <n> [--context K] | --source <tag> [--channel <c>]   (read the full contiguous chunk range or whole source file — see docs/distill-server/HOW_TO_USE.md)
   enumerate   --pattern <regex> [--channel <c> --limit N]   (distinct matches across the corpus, tallied — the completeness-audit step)
@@ -899,7 +1057,7 @@ Readonly (grounding):
   context     --role <tag> [--channel <c> --limit N]   (role-scoped view of the same corpus — FR-9)
   diff        --from <ref> --to <ref>   (added/removed/changed documents between two releases or channels — FR-18)
   serve       --addr <a> --channel stable|testing [--pool N --lite]   (async TCP read-server, hot-swaps on channel repoint)
-  serve-http  --addr <a> --channel stable|testing [--pool N]   (HTTP/JSON read-server — FR-20; GET /search /read /context /releases /channels /healthz)
+  serve-http  --addr <a> --channel stable|testing [--pool N]   (HTTP/JSON read-server — FR-20; GET /search /read /context /graph /releases /channels /healthz)
   mcp         (MCP server over stdio — first-class interface for LLM agents)
   releases    [--json]
   channels    [--json]

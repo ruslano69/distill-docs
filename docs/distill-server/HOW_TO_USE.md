@@ -130,6 +130,25 @@ a complete, accurate description of the HR/AX2009 integration doc, the full
 Cipher chapter, and the full Library/Prototypes chapters. **The synthesis
 happens on the full text, never on fragments.**
 
+### 6. Check the graph before you trust a hit — `--graph`, `graph`
+
+If the release was digested (`distill-server digest --model <ollama>` before
+publish), retrieval can tell you *how* a hit relates to the rest of the truth,
+not just that it matched:
+
+```bash
+# annotate each hit with its typed relations; a ⚠ superseded/contradicted
+# banner means "don't ground on this, it's obsolete or disputed"
+distill-server search --query "authentication" --graph 4
+
+# a single doc's relations (also MCP tool `graph`, HTTP GET /graph?slug=SPEC-42)
+distill-server graph SPEC-42
+```
+
+Use it to avoid grounding on a spec that a newer one supersedes, or to surface a
+contradiction before it reaches the answer. Edges are `proposed` — the digester
+suggests, a human/policy confirms; treat them as leads, not law.
+
 ## What the tool does for you (so you don't have to route around it)
 
 - **`snippet()` keyword-in-context** (added this session): FTS results carry a
