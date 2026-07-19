@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased — code review fixes (security, correctness, performance)
+
+A code review flagged 9 findings; verified each against the actual code
+before fixing (2 turned out to be false positives — see the PR for the
+verification detail). Fixed the 7 confirmed ones:
+
+- **Path traversal (critical, security)** — `truth.Store.Publish`'s release
+  `version` reached `VACUUM INTO` unvalidated; empirically confirmed
+  `version="../../../../../../etc/passwd"` resolves clean out of the store
+  root via `filepath.Join`/`Clean`, letting a crafted version write a SQLite
+  file to an arbitrary filesystem path. Added `truth.ValidVersion` (a strict
+  `[A-Za-z0-9._-]+` allowlist — no path separators, so no traversal is
+  possible regardless of dot-runs) and apply it at both the write boundary
+  (`Publish`) and the read fallback (`Resolve`'s "treat as a release version"
+  branch, equally reachable via an untrusted `--channel`/MCP `channel` arg).
+- **Resource leak** — `migrateMetadataColumns` (db.go) returned on the
+  `rows.Err()` path before `rows.Close()` ran; switched to `defer` right
+  after the query, closing on every exit path.
+- **N+1 queries** — `ViewRelations` (the shared render-ready-relations
+  fetch behind `distill graph`, the MCP `graph` tool, and the HTTP `/graph`
+  endpoint) called `DocByID` once per edge; now batch-fetches every distinct
+  target in a single `WHERE id IN (...)` query.
+- **Unneeded allocation** — `fetchPage` (web.go) converted a downloaded
+  page's `[]byte` body to a `string` purely to wrap it in `strings.NewReader`
+  for `html.Parse`; now uses `bytes.NewReader` directly, no copy.
+- **Search correctness** — `SearchHybrid` filtered its vector arm by
+  `docType` but not its FTS arm, so an FTS hit of the wrong type could still
+  be fused into filtered results via RRF, silently defeating the filter. Both
+  arms now route through the same `Filter{Type: docType}`. (The actively-used
+  unified `Search(SearchOpts)` entry point already filtered both arms
+  correctly — this bug was isolated to the older `SearchHybrid` convenience
+  wrapper, which has exactly one caller and was never exercised with a
+  non-empty docType in practice.)
+- **`time.Tick` → `time.NewTicker` + `Stop()`** — both timer loops in
+  `distill-server serve` (channel-watch hot-swap, throughput logger) now use
+  the idiomatic pattern. No functional difference today (both loops run for
+  the server's lifetime with no exit path), but this is the correct shape and
+  is forward-compatible if graceful shutdown is added later.
+- **Silently-swallowed marshal error** — `jsonString` (the MCP tool-result
+  JSON helper) now returns `(string, error)` instead of discarding
+  `json.Marshal`'s error; a future unmarshalable field surfaces as a real
+  tool error (`isError`) instead of a misleading empty `"{}"`.
+
+All fixes are covered by new or extended tests (path-traversal attack
+strings, N+1 batch-resolution edge cases, the FTS/vec filter-symmetry
+regression, `jsonString`'s error path). `go build/vet/test ./...` green.
+
 ## Unreleased — CLI/graph duplication cleanup
 
 A funcfinder-driven duplication audit of `cmd/distill` vs `cmd/distill-server`

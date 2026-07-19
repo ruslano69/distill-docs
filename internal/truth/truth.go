@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -121,12 +122,36 @@ func (s *Store) ReleasePath(version string) string {
 	return filepath.Join(s.root, "releases", "truth-"+version+".sqlite")
 }
 
+// releaseVersionRx restricts a release version to a safe filename component:
+// letters, digits, dots, underscores, and hyphens only — no path separators
+// ("/", "\") of any kind. Since ReleasePath builds a path by string
+// concatenation ("truth-"+version+".sqlite") before filepath.Join/Clean
+// normalizes it, a version containing a separator can reintroduce ".."
+// segments that escape the releases directory (and, with enough of them,
+// the store root entirely) — e.g. version="../../../../etc/passwd" resolves
+// to an absolute path outside root. Excluding separators closes that off
+// regardless of how many "." runs appear, since Clean only treats a
+// slash-delimited segment that is exactly ".." as "go up a directory".
+var releaseVersionRx = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ValidVersion reports whether version is safe to embed in a release
+// filename (see releaseVersionRx). Publish rejects invalid versions before
+// they ever reach VACUUM INTO; Resolve applies the same check to a bare
+// release-version lookup (its "not a known channel" fallback), since that
+// path is equally reachable with attacker-influenced input.
+func ValidVersion(version string) bool {
+	return releaseVersionRx.MatchString(version)
+}
+
 // Publish snapshots the current write-log into an immutable release file via
 // VACUUM INTO, records it in the control DB, and returns it. A release version
 // must be unique; re-publishing an existing version is refused.
 func (s *Store) Publish(version, notes string) (Release, error) {
 	if strings.TrimSpace(version) == "" {
 		return Release{}, errors.New("empty release version")
+	}
+	if !ValidVersion(version) {
+		return Release{}, fmt.Errorf("invalid release version %q: must match %s (no path separators)", version, releaseVersionRx)
 	}
 	dst := s.ReleasePath(version)
 	if _, err := os.Stat(dst); err == nil {
@@ -389,7 +414,14 @@ func (s *Store) Resolve(ref string) (string, error) {
 		}
 		return s.ReleasePath(version), nil
 	default:
-		// Treat as an explicit release version.
+		// Treat as an explicit release version. Reject before ReleasePath the
+		// same way Publish does — this fallback is just as reachable with
+		// attacker-influenced input (e.g. a --channel/MCP "channel" argument),
+		// and an invalid ref folds into the same not-found error a validation
+		// failure would otherwise leak a distinguishable signal for.
+		if !ValidVersion(ref) {
+			return "", fmt.Errorf("no such release or channel %q", ref)
+		}
 		path := s.ReleasePath(ref)
 		if _, err := os.Stat(path); err != nil {
 			return "", fmt.Errorf("no such release or channel %q", ref)

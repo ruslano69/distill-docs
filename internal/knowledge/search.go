@@ -352,7 +352,11 @@ func SearchHybrid(db *sql.DB, query string, embedding []float32, limit int, metr
 	byID := map[int64]Result{}
 
 	if query != "" {
-		fts, err := SearchFTS(db, query, fetch, prefix)
+		// searchFTSFiltered, not the unfiltered SearchFTS: the vec arm below
+		// filters by docType, and this arm must match — an unfiltered FTS side
+		// let RRF fuse in documents of any type, defeating a caller-requested
+		// docType even when the vec side correctly honored it.
+		fts, err := searchFTSFiltered(db, query, fetch, prefix, Filter{Type: docType})
 		if err != nil {
 			return nil, err
 		}

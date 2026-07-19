@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Edge is one directed link in the knowledge-connectivity graph.
@@ -174,14 +175,23 @@ type RelationView struct {
 // split out from RelationsView so a caller that needs to distinguish "subject
 // doc not found" (404) from "edge query failed" (500), like the HTTP /graph
 // endpoint, can still share this step instead of rebuilding its own
-// DocByID-per-edge loop.
+// DocByID-per-edge loop. Resolves every distinct target in one batch query
+// rather than one DocByID call per edge (an N+1 pattern with a real if small
+// cost even in-process — see relationsFor for the single-source JOIN
+// equivalent this can't use directly, since edges here may span multiple
+// source docs).
 func ViewRelations(db *sql.DB, edges []Edge) []RelationView {
 	views := make([]RelationView, 0, len(edges))
+	if len(edges) == 0 {
+		return views
+	}
+	targets := batchLoadDocs(db, uniqueDstIDs(edges))
 	for _, e := range edges {
-		// A target whose doc was deleted after the edge was written falls back
-		// to a bare "id-N" label rather than an empty/wrong slug.
+		// A target whose doc was deleted after the edge was written (or the
+		// batch query itself failed) falls back to a bare "id-N" label rather
+		// than an empty/wrong slug.
 		slug, title := fmt.Sprintf("id-%d", e.Dst), ""
-		if dst, err := DocByID(db, e.Dst); err == nil {
+		if dst, ok := targets[e.Dst]; ok {
 			slug, title = dst.Slug(), dst.Title
 		}
 		views = append(views, RelationView{
@@ -190,6 +200,47 @@ func ViewRelations(db *sql.DB, edges []Edge) []RelationView {
 		})
 	}
 	return views
+}
+
+func uniqueDstIDs(edges []Edge) []int64 {
+	ids := make([]int64, 0, len(edges))
+	seen := make(map[int64]bool, len(edges))
+	for _, e := range edges {
+		if !seen[e.Dst] {
+			seen[e.Dst] = true
+			ids = append(ids, e.Dst)
+		}
+	}
+	return ids
+}
+
+// batchLoadDocs fetches every doc in ids with a single `IN (...)` query,
+// returning a partial (possibly empty) map on failure — callers degrade
+// gracefully (a missing entry means "not found or query failed", the same
+// fallback DocByID's per-call error already meant before this batched).
+func batchLoadDocs(db *sql.DB, ids []int64) map[int64]Doc {
+	out := make(map[int64]Doc, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := db.Query(`SELECT id, type, title FROM docs WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d Doc
+		if rows.Scan(&d.ID, &d.Type, &d.Title) != nil {
+			continue
+		}
+		out[d.ID] = d
+	}
+	return out
 }
 
 // RelationsView loads doc id and its typed L2 relations, resolving each

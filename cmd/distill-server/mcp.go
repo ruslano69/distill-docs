@@ -311,7 +311,7 @@ func (m *mcpServer) toolSearch(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"release": ref, "results": res}), nil
+	return jsonString(map[string]any{"release": ref, "results": res})
 }
 
 func (m *mcpServer) toolSuggest(args map[string]any) (string, error) {
@@ -343,7 +343,7 @@ func (m *mcpServer) toolSuggest(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"channel": ref, "prefix": prefix, "relative_to": relativeTo, "terms": terms}), nil
+	return jsonString(map[string]any{"channel": ref, "prefix": prefix, "relative_to": relativeTo, "terms": terms})
 }
 
 func (m *mcpServer) toolContext(args map[string]any) (string, error) {
@@ -368,7 +368,7 @@ func (m *mcpServer) toolContext(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"role": role, "channel": ref, "documents": docs}), nil
+	return jsonString(map[string]any{"role": role, "channel": ref, "documents": docs})
 }
 
 // toolGraph returns one document's typed L2 relations from a release — the
@@ -413,7 +413,7 @@ func (m *mcpServer) toolGraph(args map[string]any) (string, error) {
 	for i, v := range views {
 		rels[i] = rel{v.Kind, v.Status, v.TargetSlug, v.Rationale, v.Model, v.Confidence}
 	}
-	return jsonString(map[string]any{"slug": doc.Slug(), "title": doc.Title, "channel": ref, "relations": rels}), nil
+	return jsonString(map[string]any{"slug": doc.Slug(), "title": doc.Title, "channel": ref, "relations": rels})
 }
 
 func (m *mcpServer) toolDiffReleases(args map[string]any) (string, error) {
@@ -445,7 +445,7 @@ func (m *mcpServer) toolDiffReleases(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"from": from, "to": to, "diff": diff}), nil
+	return jsonString(map[string]any{"from": from, "to": to, "diff": diff})
 }
 
 func (m *mcpServer) toolListReleases() (string, error) {
@@ -453,7 +453,7 @@ func (m *mcpServer) toolListReleases() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(rels), nil
+	return jsonString(rels)
 }
 
 func (m *mcpServer) toolChannels() (string, error) {
@@ -461,7 +461,7 @@ func (m *mcpServer) toolChannels() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(chans), nil
+	return jsonString(chans)
 }
 
 func (m *mcpServer) toolProvenance(args map[string]any) (string, error) {
@@ -473,7 +473,7 @@ func (m *mcpServer) toolProvenance(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(entries), nil
+	return jsonString(entries)
 }
 
 // ---- rewrite tools ---------------------------------------------------------
@@ -494,7 +494,7 @@ func (m *mcpServer) toolIngest(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"id": id, "status": "ingested (rides next publish)"}), nil
+	return jsonString(map[string]any{"id": id, "status": "ingested (rides next publish)"})
 }
 
 func (m *mcpServer) toolRecord(args map[string]any) (string, error) {
@@ -518,7 +518,7 @@ func (m *mcpServer) toolRecord(args map[string]any) (string, error) {
 	if err := m.store.RecordProvenance(id, author, sourceRef); err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"id": id, "status": "recorded (rides next publish)"}), nil
+	return jsonString(map[string]any{"id": id, "status": "recorded (rides next publish)"})
 }
 
 func (m *mcpServer) toolPublish(args map[string]any) (string, error) {
@@ -557,7 +557,7 @@ func (m *mcpServer) toolPublish(args map[string]any) (string, error) {
 			result["code_map_warning"] = w
 		}
 	}
-	return jsonString(result), nil
+	return jsonString(result)
 }
 
 func (m *mcpServer) toolFreeze(args map[string]any) (string, error) {
@@ -569,7 +569,7 @@ func (m *mcpServer) toolFreeze(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"version": release, "frozen_at": ts}), nil
+	return jsonString(map[string]any{"version": release, "frozen_at": ts})
 }
 
 func (m *mcpServer) toolPrune(args map[string]any) (string, error) {
@@ -581,7 +581,7 @@ func (m *mcpServer) toolPrune(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"pruned": pruned, "count": len(pruned)}), nil
+	return jsonString(map[string]any{"pruned": pruned, "count": len(pruned)})
 }
 
 func (m *mcpServer) toolSetChannel(args map[string]any) (string, error) {
@@ -593,12 +593,22 @@ func (m *mcpServer) toolSetChannel(args map[string]any) (string, error) {
 	if err := m.store.SetChannel(name, release); err != nil {
 		return "", err
 	}
-	return jsonString(map[string]any{"channel": name, "release": release}), nil
+	return jsonString(map[string]any{"channel": name, "release": release})
 }
 
-func jsonString(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
+// jsonString marshals v to a compact JSON string for an MCP tool's text
+// result. Every caller builds v from data already known to be JSON-safe
+// (maps/slices/structs of strings, numbers, and other marshaled values), but
+// a future field of an unsupported type (a channel, a func, a cyclic
+// reference) would otherwise fail silently — the error now propagates like
+// any other tool-level failure (surfaced to the agent via isError) instead of
+// a misleading empty "{}" the agent could mistake for a real, empty result.
+func jsonString(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("marshal json: %w", err)
+	}
+	return string(b), nil
 }
 
 // toolSchemas returns the MCP tool catalog. Descriptions double as the agent's
