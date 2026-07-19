@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +44,7 @@ func main() {
 	// Collect args up to (not including) the action word.
 	var preAction, postAction []string
 	foundAction := false
-	actions := map[string]bool{"init": true, "add": true, "search": true, "count": true, "eval": true, "digest": true, "graph": true}
+	actions := map[string]bool{"init": true, "add": true, "search": true, "count": true, "eval": true, "digest": true, "graph": true, "config": true}
 	for i, a := range os.Args[1:] {
 		if actions[a] {
 			preAction = os.Args[1 : i+1]
@@ -77,8 +78,79 @@ func main() {
 		runDigest(*dbPath, postAction)
 	case "graph":
 		runGraph(*dbPath, postAction)
+	case "config":
+		runConfig(*dbPath, postAction)
 	default:
 		fatalf("unknown action %q", action)
+	}
+}
+
+// runConfig sets or prints the per-corpus ingest defaults stored in the
+// knowledge DB's settings table (chunk-size/overlap/strip-runes are corpus
+// invariants; type/author are batch defaults). Only the flags actually passed
+// are written; with no flags it prints the current settings. An explicit flag
+// on `add` still overrides these. Shares the settings table with distill-server.
+func runConfig(dbPath string, args []string) {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	chunkSize := fs.Int("chunk-size", 0, "default max chunk runes for file ingest")
+	chunkOverlap := fs.Int("chunk-overlap", 0, "default chunk overlap runes")
+	stripRunes := fs.String("strip-runes", "", "default junk runes to strip at index time (e.g. an OCR glyph)")
+	docType := fs.String("type", "", "default document type")
+	author := fs.String("author", "", "default author (provenance)")
+	jsonOut := fs.Bool("json", false, "output JSON")
+	fs.Parse(args)
+
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		fatalf("mkdir: %v", err)
+	}
+	db, err := knowledge.Open(dbPath)
+	if err != nil {
+		fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	pairs := []struct{ flag, key, val string }{
+		{"chunk-size", knowledge.SettingChunkSize, strconv.Itoa(*chunkSize)},
+		{"chunk-overlap", knowledge.SettingChunkOverlap, strconv.Itoa(*chunkOverlap)},
+		{"strip-runes", knowledge.SettingStripRunes, *stripRunes},
+		{"type", knowledge.SettingType, *docType},
+		{"author", knowledge.SettingAuthor, *author},
+	}
+	passed := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { passed[f.Name] = true })
+	changed := 0
+	for _, p := range pairs {
+		if passed[p.flag] {
+			if err := knowledge.SetSetting(db, p.key, p.val); err != nil {
+				fatalf("set %s: %v", p.key, err)
+			}
+			changed++
+		}
+	}
+
+	all, err := knowledge.AllSettings(db)
+	if err != nil {
+		fatalf("read settings: %v", err)
+	}
+	if *jsonOut {
+		json.NewEncoder(os.Stdout).Encode(all)
+		return
+	}
+	if changed > 0 {
+		fmt.Fprintf(os.Stderr, "updated %d setting(s)\n", changed)
+	}
+	if len(all) == 0 {
+		fmt.Fprintln(os.Stderr, "no corpus settings set (add uses built-in defaults)")
+		return
+	}
+	keys := make([]string, 0, len(all))
+	for k := range all {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(os.Stderr, "corpus settings:")
+	for _, k := range keys {
+		fmt.Printf("  %-16s %s\n", k, all[k])
 	}
 }
 
@@ -314,6 +386,7 @@ func runAdd(dbPath string, args []string) {
 	chunkSize := fs.Int("chunk-size", 800, "max chunk size in runes (with --file)")
 	chunkOverlap := fs.Int("chunk-overlap", 80, "overlap runes between chunks (with --file)")
 	docType := fs.String("type", "general", "document type: general|tool_usage|error|scenario")
+	stripRunes := fs.String("strip-runes", "", "junk runes to strip at index time (e.g. an OCR separator glyph: --strip-runes Ω)")
 	meta := fs.String("meta", "{}", "raw metadata JSON base; the structured flags below overlay it")
 	author := fs.String("author", "", "author (provenance)")
 	rank := docmeta.RegisterRankFlags(fs)
@@ -322,16 +395,6 @@ func runAdd(dbPath string, args []string) {
 	embedURL := fs.String("embed-url", embed.DefaultURL, "embeddings endpoint (with --embed-model)")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
-
-	// Structured ranking/provenance flags overlay the raw --meta base, so
-	// `--topic auth --pinned` and `--meta '{"custom":"x"}'` compose (the shared
-	// docmeta binder — same metadata contract as distill-server).
-	dm := docmeta.Meta{Author: *author}
-	rank.Apply(&dm)
-	metaStr, err := docmeta.Merge(*meta, dm)
-	if err != nil {
-		fatalf("%v", err)
-	}
 
 	ec := embed.New(*embedURL, *embedModel)
 
@@ -344,11 +407,32 @@ func runAdd(dbPath string, args []string) {
 	}
 	defer db.Close()
 
+	// Corpus settings supply defaults for chunk/type/author/strip; an
+	// explicitly-passed flag still overrides them (see `distill config`).
+	r, err := knowledge.NewFlagResolver(db, fs)
+	if err != nil {
+		fatalf("read settings: %v", err)
+	}
+	chunkOpts := knowledge.ChunkOpts{
+		MaxRunes:     r.Int("chunk-size", knowledge.SettingChunkSize, *chunkSize),
+		OverlapRunes: r.Int("chunk-overlap", knowledge.SettingChunkOverlap, *chunkOverlap),
+	}
+	strip := r.Str("strip-runes", knowledge.SettingStripRunes, *stripRunes)
+	typ := r.Str("type", knowledge.SettingType, *docType)
+	aut := r.Str("author", knowledge.SettingAuthor, *author)
+
+	// Structured ranking/provenance flags overlay the raw --meta base, so
+	// `--topic auth --pinned` and `--meta '{"custom":"x"}'` compose (the shared
+	// docmeta binder — same metadata contract as distill-server).
+	dm := docmeta.Meta{Author: aut}
+	rank.Apply(&dm)
+	metaStr, err := docmeta.Merge(*meta, dm)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
 	if *urlFlag != "" {
-		opts := knowledge.CrawlOpts{
-			MaxPages:  *maxPages,
-			ChunkOpts: knowledge.ChunkOpts{MaxRunes: *chunkSize, OverlapRunes: *chunkOverlap},
-		}
+		opts := knowledge.CrawlOpts{MaxPages: *maxPages, ChunkOpts: chunkOpts}
 		var fetched int
 		progress := func(done, queued int, pageURL string) {
 			fetched = done
@@ -363,10 +447,13 @@ func runAdd(dbPath string, args []string) {
 		if err != nil {
 			fatalf("crawl: %v", err)
 		}
+		for i := range chunks {
+			chunks[i].Content = knowledge.NormalizeForIndex(chunks[i].Content, strip)
+		}
 		vecs := embedChunks(ec, chunks)
 		var ids []int64
 		for i, ch := range chunks {
-			id, err := knowledge.Add(db, ch.Title, ch.Content, *docType, metaStr, chunkVec(vecs, i))
+			id, err := knowledge.Add(db, ch.Title, ch.Content, typ, metaStr, chunkVec(vecs, i))
 			if err != nil {
 				fatalf("add chunk: %v", err)
 			}
@@ -381,8 +468,7 @@ func runAdd(dbPath string, args []string) {
 	}
 
 	if *file != "" {
-		opts := knowledge.ChunkOpts{MaxRunes: *chunkSize, OverlapRunes: *chunkOverlap}
-		chunks, err := knowledge.IngestFile(*file, opts)
+		chunks, err := knowledge.IngestFile(*file, chunkOpts)
 		if err != nil {
 			var ocrErr *knowledge.OCRQualityError
 			if errors.As(err, &ocrErr) {
@@ -400,10 +486,13 @@ func runAdd(dbPath string, args []string) {
 			}
 			fatalf("ingest: %v", err)
 		}
+		for i := range chunks {
+			chunks[i].Content = knowledge.NormalizeForIndex(chunks[i].Content, strip)
+		}
 		vecs := embedChunks(ec, chunks)
 		var ids []int64
 		for i, ch := range chunks {
-			id, err := knowledge.Add(db, ch.Title, ch.Content, *docType, metaStr, chunkVec(vecs, i))
+			id, err := knowledge.Add(db, ch.Title, ch.Content, typ, metaStr, chunkVec(vecs, i))
 			if err != nil {
 				fatalf("add chunk: %v", err)
 			}
@@ -418,18 +507,19 @@ func runAdd(dbPath string, args []string) {
 	}
 
 	if *session != "" {
-		runAddSession(db, ec, *session, knowledge.ChunkOpts{MaxRunes: *chunkSize, OverlapRunes: *chunkOverlap}, *jsonOut)
+		runAddSession(db, ec, *session, chunkOpts, *jsonOut)
 		return
 	}
 
 	if *title == "" || *content == "" {
 		fatalf("--title and --content are required (or use --file)")
 	}
+	normalized := knowledge.NormalizeForIndex(*content, strip)
 	emb := parseEmbedding(*embeddingRaw)
 	if len(emb) == 0 {
-		emb = embedOne(ec, *content)
+		emb = embedOne(ec, normalized)
 	}
-	id, err := knowledge.Add(db, *title, *content, *docType, metaStr, emb)
+	id, err := knowledge.Add(db, *title, normalized, typ, metaStr, emb)
 	if err != nil {
 		fatalf("add: %v", err)
 	}
@@ -776,6 +866,7 @@ Actions:
   add     Add a document
   search  Search documents
   count   Print total document count
+  config  Set/print per-corpus ingest defaults (chunk-size/overlap/type/author/strip-runes)
   digest  Build the L2 typed knowledge graph (LLM classifies kNN neighbors)
   graph   Show a doc's typed relations (supersedes/elaborates/...)
 
@@ -786,6 +877,7 @@ Usage:
   distill [--db <path>] add    --url  <https://...>      [--type <t>] [--chunk-size N] [--max-pages N] [--embed-model <m>] [--json]
   distill [--db <path>] search --query <q>               [--embedding <floats> | --embed-model <m>] [--mode fts|vec|hybrid|regex] [--type --topic --role] [--recency-window --recency-weight --priority-weight --pinned-boost --role-affinity --exclude-superseded] [--limit N] [--json]
   distill [--db <path>] count  [--json]
+  distill [--db <path>] config [--chunk-size --chunk-overlap --type --author --strip-runes]   (per-corpus ingest defaults; no flags = print; add flags override)
   distill [--db <path>] eval   --golden <set.json>       [--mode fts|vec|hybrid] [--embed-model <m>] [--json]   (retrieval regression: hit@k + MRR)
   distill [--db <path>] digest --model <ollama-model>    [--k N] [--min-confidence F] [--limit N] [--rebuild-knn] [--json]   (L2 typed graph)
   distill [--db <path>] graph  <SLUG>                    [--limit N] [--json]   (typed relations of one doc)

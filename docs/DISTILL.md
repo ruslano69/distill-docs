@@ -40,6 +40,7 @@ distill [--db <path>] add    --file <path.txt|md|pdf>  [--type <t>] [--author --
 distill [--db <path>] add    --session <transcript.jsonl> [--embed-model <m>] [--json]   (Claude Code session, per-turn, historical timestamps)
 distill [--db <path>] search --query <q>               [--embedding <floats>] [--mode fts|vec|hybrid|regex] [--metric cosine|l2] [--filter-type <type>] [--limit N] [--json]
 distill [--db <path>] count  [--json]
+distill [--db <path>] config [--chunk-size --chunk-overlap --type --author --strip-runes]   (per-corpus ingest defaults; add flags override)
 distill --version
 ```
 
@@ -265,6 +266,30 @@ and won't show the key at all).
 ```bash
 distill count --json   # {"count":4}
 ```
+
+### config — per-corpus ingest defaults
+
+Some `add` flags are really **corpus invariants** — how *this* knowledge base is
+chunked and cleaned should be the same for every ingest, not decided per call.
+Set them once; `add` uses them unless you pass the flag explicitly.
+
+```bash
+distill config --chunk-size 500 --strip-runes Ω --type manual --author ruslan
+distill config                 # no flags → print current settings
+```
+
+- **Stored in the knowledge DB** (a `settings` table), so they travel with the
+  data and — on `distill-server` — ride into published releases via VACUUM INTO.
+- **Precedence:** explicit `add` flag > stored setting > built-in default
+  (`knowledge.FlagResolver`). So `config --chunk-size 500` then `add --file x`
+  chunks at 500, but `add --file y --chunk-size 900` uses 900 for that call.
+- Single-file settable keys: `--chunk-size`, `--chunk-overlap`, `--type`,
+  `--author`, `--strip-runes`. `distill-server config` adds `--role-tags` and
+  `--source-version`.
+
+`--strip-runes` also enables index-time normalization on `add --file/--url`
+(matching `distill-server`), so an OCR separator glyph is stripped consistently
+across the whole corpus without repeating the flag.
 
 ---
 

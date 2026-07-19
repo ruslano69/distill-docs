@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -56,7 +57,7 @@ func main() {
 		"set-channel": true, "channels": true, "releases": true, "search": true,
 		"suggest": true, "read": true, "enumerate": true, "provenance": true, "context": true,
 		"diff": true, "serve": true, "serve-http": true, "mcp": true,
-		"digest": true, "graph": true,
+		"digest": true, "graph": true, "config": true,
 	}
 	var preAction, postAction []string
 	action := ""
@@ -125,6 +126,79 @@ func main() {
 		runDigestServer(store, postAction)
 	case "graph":
 		runGraphServer(store, postAction)
+	case "config":
+		runConfig(store, postAction)
+	}
+}
+
+// runConfig sets or prints the per-corpus ingest defaults stored in the
+// write-log's settings table (chunk-size/overlap/strip-runes are corpus
+// invariants; type/role-tags/author/source-version are batch defaults). Only
+// the flags the user actually passes are written; with no flags it prints the
+// current settings. An explicit flag on `ingest` still overrides these.
+func runConfig(s *truth.Store, args []string) {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	chunkSize := fs.Int("chunk-size", 0, "default max chunk runes for file ingest")
+	chunkOverlap := fs.Int("chunk-overlap", 0, "default chunk overlap runes")
+	stripRunes := fs.String("strip-runes", "", "default junk runes to strip at index time (e.g. an OCR glyph)")
+	docType := fs.String("type", "", "default document type")
+	roleTags := fs.String("role-tags", "", "default role tags")
+	author := fs.String("author", "", "default author (provenance)")
+	sourceVersion := fs.String("source-version", "", "default source version (provenance)")
+	jsonOut := fs.Bool("json", false, "output JSON")
+	fs.Parse(args)
+
+	db, err := knowledge.Open(s.WriteLogPath())
+	if err != nil {
+		fatalf("open write-log: %v", err)
+	}
+	defer db.Close()
+
+	// flag name -> (setting key, value); write only the flags actually passed.
+	pairs := []struct{ flag, key, val string }{
+		{"chunk-size", knowledge.SettingChunkSize, strconv.Itoa(*chunkSize)},
+		{"chunk-overlap", knowledge.SettingChunkOverlap, strconv.Itoa(*chunkOverlap)},
+		{"strip-runes", knowledge.SettingStripRunes, *stripRunes},
+		{"type", knowledge.SettingType, *docType},
+		{"role-tags", knowledge.SettingRoleTags, *roleTags},
+		{"author", knowledge.SettingAuthor, *author},
+		{"source-version", knowledge.SettingSourceVersion, *sourceVersion},
+	}
+	passed := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { passed[f.Name] = true })
+	changed := 0
+	for _, p := range pairs {
+		if passed[p.flag] {
+			if err := knowledge.SetSetting(db, p.key, p.val); err != nil {
+				fatalf("set %s: %v", p.key, err)
+			}
+			changed++
+		}
+	}
+
+	all, err := knowledge.AllSettings(db)
+	if err != nil {
+		fatalf("read settings: %v", err)
+	}
+	if *jsonOut {
+		json.NewEncoder(os.Stdout).Encode(all)
+		return
+	}
+	if changed > 0 {
+		fmt.Fprintf(os.Stderr, "updated %d setting(s)\n", changed)
+	}
+	if len(all) == 0 {
+		fmt.Fprintln(os.Stderr, "no corpus settings set (ingest uses built-in defaults)")
+		return
+	}
+	keys := make([]string, 0, len(all))
+	for k := range all {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(os.Stderr, "corpus settings:")
+	for _, k := range keys {
+		fmt.Printf("  %-16s %s\n", k, all[k])
 	}
 }
 
@@ -312,7 +386,24 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 		fatalf("open write-log: %v", err)
 	}
 	defer db.Close()
-	dm := docmeta.Meta{Author: *author, RoleTags: *roleTags, SourceVersion: *sourceVersion}
+
+	// Corpus settings supply defaults for the invariant/batch flags; an
+	// explicitly-passed flag still overrides them (see `distill-server config`).
+	r, err := knowledge.NewFlagResolver(db, fs)
+	if err != nil {
+		fatalf("read settings: %v", err)
+	}
+	chunkOpts := knowledge.ChunkOpts{
+		MaxRunes:     r.Int("chunk-size", knowledge.SettingChunkSize, *chunkSize),
+		OverlapRunes: r.Int("chunk-overlap", knowledge.SettingChunkOverlap, *chunkOverlap),
+	}
+	strip := r.Str("strip-runes", knowledge.SettingStripRunes, *stripRunes)
+	typ := r.Str("type", knowledge.SettingType, *docType)
+	aut := r.Str("author", knowledge.SettingAuthor, *author)
+	roles := r.Str("role-tags", knowledge.SettingRoleTags, *roleTags)
+	srcVer := r.Str("source-version", knowledge.SettingSourceVersion, *sourceVersion)
+
+	dm := docmeta.Meta{Author: aut, RoleTags: roles, SourceVersion: srcVer}
 	rank.Apply(&dm)
 	meta := dm.JSON()
 
@@ -327,13 +418,13 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 		// every record.
 		for i := range records {
 			if records[i].Author == "" {
-				records[i].Author = *author
+				records[i].Author = aut
 			}
 			if records[i].RoleTags == "" {
-				records[i].RoleTags = *roleTags
+				records[i].RoleTags = roles
 			}
 			if records[i].SourceVersion == "" {
-				records[i].SourceVersion = *sourceVersion
+				records[i].SourceVersion = srcVer
 			}
 		}
 		var embedFn func(string) []float32
@@ -353,8 +444,7 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 	}
 
 	if *file != "" {
-		chunks, err := knowledge.IngestFile(*file, knowledge.ChunkOpts{
-			MaxRunes: *chunkSize, OverlapRunes: *chunkOverlap})
+		chunks, err := knowledge.IngestFile(*file, chunkOpts)
 		if err != nil {
 			var ocr *knowledge.OCRQualityError
 			if errors.As(err, &ocr) {
@@ -365,7 +455,7 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 		// Normalize each chunk before indexing/embedding: strips unambiguous
 		// garbage always, plus --strip-runes, keeping the FTS vocabulary clean.
 		for i := range chunks {
-			chunks[i].Content = knowledge.NormalizeForIndex(chunks[i].Content, *stripRunes)
+			chunks[i].Content = knowledge.NormalizeForIndex(chunks[i].Content, strip)
 		}
 		// Batch-embed chunk bodies when embedding is enabled (one round-trip).
 		var vecs [][]float32
@@ -385,7 +475,7 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 			if vecs != nil {
 				v = vecs[i]
 			}
-			id, err := knowledge.Add(db, ch.Title, ch.Content, *docType, meta, v)
+			id, err := knowledge.Add(db, ch.Title, ch.Content, typ, meta, v)
 			if err != nil {
 				fatalf("add chunk: %v", err)
 			}
@@ -394,7 +484,7 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 		if *jsonOut {
 			json.NewEncoder(os.Stdout).Encode(map[string]any{"chunks": len(ids), "ids": ids, "embedded": vecs != nil})
 		} else {
-			fmt.Fprintf(os.Stderr, "ingested %d chunks from %s (type=%s, embedded=%v)\n", len(ids), *file, *docType, vecs != nil)
+			fmt.Fprintf(os.Stderr, "ingested %d chunks from %s (type=%s, embedded=%v)\n", len(ids), *file, typ, vecs != nil)
 		}
 		return
 	}
@@ -402,15 +492,15 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 	if *title == "" || *content == "" {
 		fatalf("--title and --content required (or use --file)")
 	}
-	normalized := knowledge.NormalizeForIndex(*content, *stripRunes)
-	id, err := knowledge.Add(db, *title, normalized, *docType, meta, embedOrNil(emb, normalized))
+	normalized := knowledge.NormalizeForIndex(*content, strip)
+	id, err := knowledge.Add(db, *title, normalized, typ, meta, embedOrNil(emb, normalized))
 	if err != nil {
 		fatalf("add: %v", err)
 	}
 	if *jsonOut {
 		json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id})
 	} else {
-		fmt.Fprintf(os.Stderr, "ingested id=%d (type=%s)\n", id, *docType)
+		fmt.Fprintf(os.Stderr, "ingested id=%d (type=%s)\n", id, typ)
 	}
 }
 
@@ -1000,6 +1090,7 @@ Rewrite (truth flows in):
   freeze      --release <ver>   (open the stabilization window; further fixes go to unstable)
   prune       --keep <n>   (retain the newest N releases, delete the rest — channel-pinned releases are never pruned — FR-15)
   set-channel --name stable|testing --release <ver>
+  config      [--chunk-size --chunk-overlap --strip-runes --type --role-tags --author --source-version]   (per-corpus ingest defaults; no flags = print current; ingest flags override)
   digest      --model <ollama> [--k --min-confidence --limit --rebuild-knn]   (build the L2 typed knowledge graph over the write-log; publish bakes it into a release)
 
 Readonly (grounding):

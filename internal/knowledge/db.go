@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS docs_vec (
     embedding BLOB    NOT NULL
 );
 
+-- settings is a per-corpus key/value store for ingest defaults that must be
+-- constant across every ingest (chunk size/overlap, OCR strip glyph) plus batch
+-- defaults (type, role_tags, author, source_version). Setting them once here —
+-- instead of repeating flags per command — keeps the index homogeneous; an
+-- explicit CLI flag still overrides per call. Rides into releases via VACUUM INTO
+-- (provenance: how this corpus was formatted).
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
 -- edges is the knowledge-connectivity graph (L1/L2). Stage 1 populates
 -- kind='knn' edges deterministically from vector cosine similarity; the L2
 -- digester (Stage 2) adds typed edges (supersedes/contradicts/...) with
