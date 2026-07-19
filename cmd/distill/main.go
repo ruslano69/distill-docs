@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ruslano69/distill-docs/internal/digest"
+	"github.com/ruslano69/distill-docs/internal/docmeta"
 	"github.com/ruslano69/distill-docs/internal/embed"
 	"github.com/ruslano69/distill-docs/internal/knowledge"
 	"github.com/ruslano69/distill-docs/internal/llm"
@@ -313,12 +314,24 @@ func runAdd(dbPath string, args []string) {
 	chunkSize := fs.Int("chunk-size", 800, "max chunk size in runes (with --file)")
 	chunkOverlap := fs.Int("chunk-overlap", 80, "overlap runes between chunks (with --file)")
 	docType := fs.String("type", "general", "document type: general|tool_usage|error|scenario")
-	meta := fs.String("meta", "{}", "document metadata as JSON")
+	meta := fs.String("meta", "{}", "raw metadata JSON base; the structured flags below overlay it")
+	author := fs.String("author", "", "author (provenance)")
+	rank := docmeta.RegisterRankFlags(fs)
 	embeddingRaw := fs.String("embedding", "", "comma-separated float32 values (single doc only; overrides --embed-model)")
 	embedModel := fs.String("embed-model", "", "auto-embed ingested text via an Ollama model (e.g. qwen3-embedding:0.6b); enables vec/hybrid search. Empty = BYO/FTS only")
 	embedURL := fs.String("embed-url", embed.DefaultURL, "embeddings endpoint (with --embed-model)")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
+
+	// Structured ranking/provenance flags overlay the raw --meta base, so
+	// `--topic auth --pinned` and `--meta '{"custom":"x"}'` compose (the shared
+	// docmeta binder — same metadata contract as distill-server).
+	dm := docmeta.Meta{Author: *author}
+	rank.Apply(&dm)
+	metaStr, err := docmeta.Merge(*meta, dm)
+	if err != nil {
+		fatalf("%v", err)
+	}
 
 	ec := embed.New(*embedURL, *embedModel)
 
@@ -353,7 +366,7 @@ func runAdd(dbPath string, args []string) {
 		vecs := embedChunks(ec, chunks)
 		var ids []int64
 		for i, ch := range chunks {
-			id, err := knowledge.Add(db, ch.Title, ch.Content, *docType, *meta, chunkVec(vecs, i))
+			id, err := knowledge.Add(db, ch.Title, ch.Content, *docType, metaStr, chunkVec(vecs, i))
 			if err != nil {
 				fatalf("add chunk: %v", err)
 			}
@@ -390,7 +403,7 @@ func runAdd(dbPath string, args []string) {
 		vecs := embedChunks(ec, chunks)
 		var ids []int64
 		for i, ch := range chunks {
-			id, err := knowledge.Add(db, ch.Title, ch.Content, *docType, *meta, chunkVec(vecs, i))
+			id, err := knowledge.Add(db, ch.Title, ch.Content, *docType, metaStr, chunkVec(vecs, i))
 			if err != nil {
 				fatalf("add chunk: %v", err)
 			}
@@ -416,7 +429,7 @@ func runAdd(dbPath string, args []string) {
 	if len(emb) == 0 {
 		emb = embedOne(ec, *content)
 	}
-	id, err := knowledge.Add(db, *title, *content, *docType, *meta, emb)
+	id, err := knowledge.Add(db, *title, *content, *docType, metaStr, emb)
 	if err != nil {
 		fatalf("add: %v", err)
 	}

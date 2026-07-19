@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/ruslano69/distill-docs/internal/docmeta"
 	"github.com/ruslano69/distill-docs/internal/embed"
 	"github.com/ruslano69/distill-docs/internal/knowledge"
 	"github.com/ruslano69/distill-docs/internal/truth"
@@ -28,11 +29,11 @@ func newTestReadServer(t *testing.T) *httptest.Server {
 		t.Fatalf("open write-log: %v", err)
 	}
 	if _, err := knowledge.Add(wl, "Auth spec", "login uses OAuth2 device flow", "spec",
-		metaJSON(docMeta{Author: "ruslan", RoleTags: "backend", SourceVersion: "v1"}), nil); err != nil {
+		docmeta.Meta{Author: "ruslan", RoleTags: "backend", SourceVersion: "v1"}.JSON(), nil); err != nil {
 		t.Fatalf("add doc: %v", err)
 	}
 	if _, err := knowledge.Add(wl, "Deploy runbook", "kubectl rollout restart", "spec",
-		metaJSON(docMeta{Author: "ruslan", RoleTags: "ops", SourceVersion: "v1"}), nil); err != nil {
+		docmeta.Meta{Author: "ruslan", RoleTags: "ops", SourceVersion: "v1"}.JSON(), nil); err != nil {
 		t.Fatalf("add doc: %v", err)
 	}
 	wl.Close()

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — shared document-metadata binder
+
+- **`internal/docmeta`** — one home for a document's provenance + Stage-1 ranking
+  metadata (`Meta`, `JSON`, `Merge`, `RegisterRankFlags`). Both binaries now bind
+  it from a single place instead of hand-rolling per command/tool.
+- **`distill add` gains the structured flags** `--author`/`--topic`/`--priority`/
+  `--pinned`/`--supersedes` (previously only reachable via a hand-written
+  `--meta '{...}'`). `--meta` remains a raw base that the structured flags overlay
+  (`--meta '{"source":"manual"}' --topic go` → `{"source":"manual","topic":"go"}`),
+  so single-file `distill` and `distill-server` now share one metadata contract.
+
 ## v0.4.0 — 2026-07-19 · Stage 3 + server parity (the graph, everywhere)
 
 Wire the L2 knowledge graph into retrieval, and bring the whole graph surface

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ruslano69/distill-docs/internal/codemap"
+	"github.com/ruslano69/distill-docs/internal/docmeta"
 	"github.com/ruslano69/distill-docs/internal/embed"
 	"github.com/ruslano69/distill-docs/internal/knowledge"
 	"github.com/ruslano69/distill-docs/internal/truth"
@@ -222,13 +223,13 @@ func argBool(args map[string]any, key string) bool {
 	return v
 }
 
-// metaFromArgs materializes the document metadata blob from a tool's arg map —
-// the MCP counterpart to the CLI's registerRankFlags. Both ingest and record
-// read the same field set here; absent fields stay zero and metaJSON omits them,
-// so one binder serves both (record never sends role_tags/source_version;
-// ingest never sends source_ref). Adding a metadata field is a one-line edit.
-func metaFromArgs(args map[string]any) docMeta {
-	return docMeta{
+// metaFromArgs materializes the shared document metadata (docmeta.Meta) from a
+// tool's arg map — the MCP counterpart to the CLI's docmeta.RegisterRankFlags.
+// Both ingest and record read the same field set here; absent fields stay zero
+// and Meta.JSON omits them, so one binder serves both (record never sends
+// role_tags/source_version; ingest never sends source_ref).
+func metaFromArgs(args map[string]any) docmeta.Meta {
+	return docmeta.Meta{
 		Author:        argStr(args, "author", ""),
 		RoleTags:      argStr(args, "role_tags", ""),
 		SourceVersion: argStr(args, "source_version", ""),
@@ -493,7 +494,7 @@ func (m *mcpServer) toolIngest(args map[string]any) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	meta := metaJSON(metaFromArgs(args))
+	meta := metaFromArgs(args).JSON()
 	id, err := knowledge.Add(db, title, content, argStr(args, "type", "general"), meta, argFloats(args, "embedding"))
 	if err != nil {
 		return "", err
@@ -515,7 +516,7 @@ func (m *mcpServer) toolRecord(args map[string]any) (string, error) {
 	}
 	defer db.Close()
 	id, err := knowledge.Add(db, title, result, argStr(args, "type", "changelog"),
-		metaJSON(metaFromArgs(args)), nil)
+		metaFromArgs(args).JSON(), nil)
 	if err != nil {
 		return "", err
 	}

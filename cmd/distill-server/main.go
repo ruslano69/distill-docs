@@ -23,6 +23,7 @@ import (
 
 	"github.com/ruslano69/distill-docs/internal/codemap"
 	"github.com/ruslano69/distill-docs/internal/digest"
+	"github.com/ruslano69/distill-docs/internal/docmeta"
 	"github.com/ruslano69/distill-docs/internal/embed"
 	"github.com/ruslano69/distill-docs/internal/knowledge"
 	"github.com/ruslano69/distill-docs/internal/llm"
@@ -275,78 +276,6 @@ func runGraphServer(s *truth.Store, args []string) {
 	}
 }
 
-// metaJSON builds the metadata blob carried on every document: provenance that
-// the knowledge schema does not model as columns rides here as JSON.
-// docMeta is the provenance + ranking metadata attached to a doc. Zero fields
-// are omitted from the JSON so absent metadata reads as NULL in the generated
-// columns.
-type docMeta struct {
-	Author, RoleTags, SourceVersion, SourceRef, Topic string
-	Priority                                          float64
-	Pinned                                            bool
-	Supersedes                                        int64
-}
-
-func metaJSON(m docMeta) string {
-	out := map[string]any{}
-	if m.Author != "" {
-		out["author"] = m.Author
-	}
-	if m.RoleTags != "" {
-		out["role_tags"] = m.RoleTags
-	}
-	if m.SourceVersion != "" {
-		out["source_version"] = m.SourceVersion
-	}
-	if m.SourceRef != "" {
-		out["source_ref"] = m.SourceRef
-	}
-	if m.Topic != "" {
-		out["topic"] = m.Topic
-	}
-	if m.Priority != 0 {
-		out["priority"] = m.Priority
-	}
-	if m.Pinned {
-		out["pinned"] = 1
-	}
-	if m.Supersedes != 0 {
-		out["supersedes"] = m.Supersedes
-	}
-	b, _ := json.Marshal(out)
-	return string(b)
-}
-
-// rankFlags binds the Stage-1 ranking/curation flags that every write command
-// (ingest, record) exposes identically. Registering them once — instead of
-// re-declaring the same four flags per command — means a new ranking signal is
-// added in one place, not copy-pasted (which is how priority/pinned/supersedes
-// first drifted). Command-specific provenance (author, role_tags, source_ref,
-// type) stays on the command, since its help text and semantics differ.
-type rankFlags struct {
-	topic      *string
-	priority   *float64
-	pinned     *bool
-	supersedes *int64
-}
-
-func registerRankFlags(fs *flag.FlagSet) *rankFlags {
-	return &rankFlags{
-		topic:      fs.String("topic", "", "topic facet (Stage-1 ranking)"),
-		priority:   fs.Float64("priority", 0, "numeric priority (Stage-1 ranking)"),
-		pinned:     fs.Bool("pinned", false, "mark as authoritative/pinned (ranking boost)"),
-		supersedes: fs.Int64("supersedes", 0, "id of a doc this one supersedes (drops the old one from results)"),
-	}
-}
-
-// apply folds the parsed ranking flags onto a docMeta (call after fs.Parse).
-func (r *rankFlags) apply(m *docMeta) {
-	m.Topic = *r.topic
-	m.Priority = *r.priority
-	m.Pinned = *r.pinned
-	m.Supersedes = *r.supersedes
-}
-
 // embedOrNil returns the vector for text when the embedder is enabled, or nil
 // (pure BYO/FTS) otherwise. Embedding failures degrade to nil with a warning
 // rather than aborting an ingest.
@@ -374,7 +303,7 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 	chunkSize := fs.Int("chunk-size", 800, "max chunk runes (with --file)")
 	chunkOverlap := fs.Int("chunk-overlap", 80, "chunk overlap runes (with --file)")
 	stripRunes := fs.String("strip-runes", "", "extra junk runes to strip at index time (e.g. an OCR separator glyph: --strip-runes Ω)")
-	rank := registerRankFlags(fs)
+	rank := docmeta.RegisterRankFlags(fs)
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -383,9 +312,9 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 		fatalf("open write-log: %v", err)
 	}
 	defer db.Close()
-	dm := docMeta{Author: *author, RoleTags: *roleTags, SourceVersion: *sourceVersion}
-	rank.apply(&dm)
-	meta := metaJSON(dm)
+	dm := docmeta.Meta{Author: *author, RoleTags: *roleTags, SourceVersion: *sourceVersion}
+	rank.Apply(&dm)
+	meta := dm.JSON()
 
 	if *file != "" && strings.EqualFold(filepath.Ext(*file), ".json") {
 		records, err := knowledge.ParseRecordsFile(*file)
@@ -492,7 +421,7 @@ func runRecord(s *truth.Store, emb *embed.Client, args []string) {
 	docType := fs.String("type", "changelog", "changelog|task|decision")
 	sourceRef := fs.String("source-ref", "", "link to the source task/spec this answers")
 	author := fs.String("author", "", "who produced this result")
-	rank := registerRankFlags(fs)
+	rank := docmeta.RegisterRankFlags(fs)
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -505,9 +434,9 @@ func runRecord(s *truth.Store, emb *embed.Client, args []string) {
 	}
 	defer db.Close()
 
-	dm := docMeta{Author: *author, SourceRef: *sourceRef}
-	rank.apply(&dm)
-	meta := metaJSON(dm)
+	dm := docmeta.Meta{Author: *author, SourceRef: *sourceRef}
+	rank.Apply(&dm)
+	meta := dm.JSON()
 	id, err := knowledge.Add(db, *title, *result, *docType, meta, embedOrNil(emb, *result))
 	if err != nil {
 		fatalf("record: %v", err)
