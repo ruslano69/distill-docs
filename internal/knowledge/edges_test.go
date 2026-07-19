@@ -56,3 +56,37 @@ func TestByRoleTopic(t *testing.T) {
 		t.Errorf("ByRoleTopic backend/auth: want [AuthSpec], got %d docs", len(docs))
 	}
 }
+
+func TestRelationsView(t *testing.T) {
+	db := openDB(t)
+	Add(db, "Old spec", "x", "spec", "{}", nil) // 1
+	Add(db, "New spec", "y", "spec", "{}", nil) // 2
+	tx, _ := db.Begin()
+	UpsertTypedEdge(tx, Edge{Src: 2, Dst: 1, Weight: 0.9, Kind: "supersedes", Status: "proposed", Rationale: "newer", Model: "m"})
+	tx.Commit()
+
+	doc, views, err := RelationsView(db, 2, 10)
+	if err != nil {
+		t.Fatalf("RelationsView: %v", err)
+	}
+	if doc.Slug() != "SPEC-2" {
+		t.Errorf("doc = %+v, want SPEC-2", doc)
+	}
+	if len(views) != 1 {
+		t.Fatalf("want 1 relation, got %d", len(views))
+	}
+	v := views[0]
+	if v.Kind != "supersedes" || v.TargetSlug != "SPEC-1" || v.TargetTitle != "Old spec" ||
+		v.Status != "proposed" || v.Rationale != "newer" || v.Model != "m" || v.Confidence != 0.9 {
+		t.Errorf("view = %+v", v)
+	}
+
+	// A doc with no typed relations returns an empty (not nil-error) slice.
+	_, none, err := RelationsView(db, 1, 10)
+	if err != nil {
+		t.Fatalf("RelationsView (no relations): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want 0 relations for SPEC-1 (only has an incoming edge), got %d", len(none))
+	}
+}

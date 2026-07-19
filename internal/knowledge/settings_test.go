@@ -1,8 +1,11 @@
 package knowledge
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -90,5 +93,72 @@ func TestFlagResolver_Precedence(t *testing.T) {
 	// author not passed and unset → flag default "" stands.
 	if got := r.Str("author", SettingAuthor, *author); got != "" {
 		t.Errorf("unset setting should leave default: got %q", got)
+	}
+}
+
+func TestApplySettingFlags_OnlyExplicitlyPassed(t *testing.T) {
+	db := openDB(t)
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	fs.Int("chunk-size", 0, "")
+	docType := fs.String("type", "", "")
+	fs.Parse([]string{"--chunk-size", "500"}) // --type NOT passed
+
+	pairs := []SettingFlag{
+		{"chunk-size", SettingChunkSize, "500"},
+		{"type", SettingType, *docType},
+	}
+	changed, err := ApplySettingFlags(db, fs, pairs)
+	if err != nil {
+		t.Fatalf("ApplySettingFlags: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("changed = %d, want 1 (only chunk-size was passed)", changed)
+	}
+
+	all, err := AllSettings(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[SettingChunkSize] != "500" {
+		t.Errorf("stored settings = %v, want only chunk_size=500", all)
+	}
+	if _, ok := all[SettingType]; ok {
+		t.Errorf("type should not be written when --type was not passed, got %v", all)
+	}
+}
+
+func TestPrintSettings(t *testing.T) {
+	db := openDB(t)
+
+	// Empty corpus: a one-line note, not an error.
+	var empty bytes.Buffer
+	if err := PrintSettings(&empty, db, false); err != nil {
+		t.Fatalf("PrintSettings (empty): %v", err)
+	}
+	if !strings.Contains(empty.String(), "no corpus settings set") {
+		t.Errorf("empty settings should note the empty state, got %q", empty.String())
+	}
+
+	SetSetting(db, SettingChunkSize, "500")
+	SetSetting(db, SettingAuthor, "ruslan")
+
+	var text bytes.Buffer
+	if err := PrintSettings(&text, db, false); err != nil {
+		t.Fatalf("PrintSettings (text): %v", err)
+	}
+	if !strings.Contains(text.String(), "chunk_size") || !strings.Contains(text.String(), "500") {
+		t.Errorf("text listing missing chunk_size=500:\n%s", text.String())
+	}
+
+	var jsonBuf bytes.Buffer
+	if err := PrintSettings(&jsonBuf, db, true); err != nil {
+		t.Fatalf("PrintSettings (json): %v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(jsonBuf.Bytes(), &got); err != nil {
+		t.Fatalf("PrintSettings JSON invalid: %v\n%s", err, jsonBuf.String())
+	}
+	if got[SettingChunkSize] != "500" || got[SettingAuthor] != "ruslan" {
+		t.Errorf("JSON settings = %v", got)
 	}
 }

@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — CLI/graph duplication cleanup
+
+A funcfinder-driven duplication audit of `cmd/distill` vs `cmd/distill-server`
+found four near-identical function pairs (~330 lines, half of it copy-pasted)
+plus a fourth and fifth copy of the same relation-rendering logic in the MCP
+`graph` tool and HTTP `/graph` handler. Consolidated into shared packages so a
+fix or feature now lands once instead of being replicated per call site:
+
+- **New `internal/cliutil`** — `SplitPositionalFlag` (the "accept a bare
+  positional before flag-parsing" trick used by both `graph` subcommands),
+  `ParseEmbedding` (now error-returning instead of calling `fatalf` inline),
+  `Truncate`.
+- **`digest.PrintReport`** — the JSON/text digest-report renderer, shared by
+  `distill digest` and `distill-server digest` (previously two ~50-line copies).
+- **`knowledge.ApplySettingFlags` / `PrintSettings`** — the `config`
+  write/print logic, shared by both `config` subcommands.
+- **`knowledge.RelationsView` / `ViewRelations`** — load-doc-and-resolve-typed-
+  relations, now shared by `distill graph`, `distill-server graph`, the MCP
+  `graph` tool, and the HTTP `/graph` endpoint (previously **four** separate
+  copies of the same DocByID-per-edge loop). `ViewRelations` is split out
+  separately so the HTTP handler can still return 404 vs 500 for "doc not
+  found" vs "edge query failed", which the unified fetch can't distinguish.
+- **Fixed a discrepancy the audit surfaced**: `distill-server graph`'s text
+  output never truncated a long target title or rationale (`distill graph`
+  did); both now truncate consistently (title 40 chars, rationale 100).
+- `cmd/distill/main.go` and `cmd/distill-server/main.go` shrink by ~150 net
+  lines; behavior is unchanged (all existing tests pass, including the
+  graph/digest/config end-to-end CLI, MCP, and HTTP tests) aside from the
+  truncation fix above.
+
 ## v0.4.1 — 2026-07-19
 
 ### Digester direction/confidence fix

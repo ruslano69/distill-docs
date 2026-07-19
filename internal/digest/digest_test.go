@@ -1,8 +1,10 @@
 package digest
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -292,5 +294,41 @@ func TestSystemPrompt_HasDirectionSafeguards(t *testing.T) {
 		if !strings.Contains(systemPrompt, want) {
 			t.Errorf("systemPrompt missing %q", want)
 		}
+	}
+}
+
+func TestPrintReport_JSON(t *testing.T) {
+	rep := Report{Candidates: 10, Skipped: 4, Classified: 6, EdgesWritten: 3, Errors: 1, ByKind: map[string]int{"supersedes": 2, "same_topic": 1}}
+	var buf bytes.Buffer
+	PrintReport(&buf, rep, true)
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("PrintReport JSON not valid: %v\n%s", err, buf.String())
+	}
+	if got["candidates"] != float64(10) || got["edges_written"] != float64(3) || got["errors"] != float64(1) {
+		t.Errorf("JSON report fields wrong: %v", got)
+	}
+	byKind, ok := got["by_kind"].(map[string]any)
+	if !ok || byKind["supersedes"] != float64(2) {
+		t.Errorf("JSON by_kind wrong: %v", got["by_kind"])
+	}
+}
+
+func TestPrintReport_Text(t *testing.T) {
+	rep := Report{Candidates: 10, Skipped: 4, Classified: 6, EdgesWritten: 3, Errors: 1, ByKind: map[string]int{"supersedes": 2}}
+	var buf bytes.Buffer
+	PrintReport(&buf, rep, false)
+	out := buf.String()
+	for _, want := range []string{"10 candidates", "4 skipped", "6 classified", "3 edges written", "1 errors", "supersedes   2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text report missing %q:\n%s", want, out)
+		}
+	}
+
+	// Zero errors: the ", N errors" suffix must not appear at all.
+	var buf2 bytes.Buffer
+	PrintReport(&buf2, Report{Candidates: 1, ByKind: map[string]int{}}, false)
+	if strings.Contains(buf2.String(), "errors") {
+		t.Errorf("zero-error report should omit the errors suffix:\n%s", buf2.String())
 	}
 }

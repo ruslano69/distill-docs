@@ -259,10 +259,10 @@ func (s *server) handleGraph(w http.ResponseWriter, r *http.Request) {
 		Model      string  `json:"model,omitempty"`
 		Confidence float64 `json:"confidence"`
 	}
-	rels := make([]rel, 0, len(edges))
-	for _, e := range edges {
-		dst, _ := knowledge.DocByID(db, e.Dst)
-		rels = append(rels, rel{e.Kind, e.Status, dst.Slug(), e.Rationale, e.Model, e.Weight})
+	views := knowledge.ViewRelations(db, edges)
+	rels := make([]rel, len(views))
+	for i, v := range views {
+		rels[i] = rel{v.Kind, v.Status, v.TargetSlug, v.Rationale, v.Model, v.Confidence}
 	}
 	s.served.Add(1)
 	writeJSON(w, http.StatusOK, map[string]any{"slug": doc.Slug(), "title": doc.Title, "relations": rels})
