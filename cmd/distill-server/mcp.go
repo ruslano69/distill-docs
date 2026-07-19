@@ -180,6 +180,8 @@ func (m *mcpServer) callTool(name string, args map[string]any) (string, error) {
 		return m.toolContext(args)
 	case "diff_releases":
 		return m.toolDiffReleases(args)
+	case "graph":
+		return m.toolGraph(args)
 	default:
 		return "", fmt.Errorf("unknown tool %q", name)
 	}
@@ -283,6 +285,8 @@ func (m *mcpServer) toolSearch(args map[string]any) (string, error) {
 				RoleAffinity:      argFloat(args, "role_affinity", 0),
 				ExcludeSuperseded: argBool(args, "exclude_superseded"),
 			},
+			GraphExpand: argInt(args, "graph", 0),
+			Cluster:     argBool(args, "cluster"),
 		})
 	}
 	if err != nil {
@@ -346,6 +350,56 @@ func (m *mcpServer) toolContext(args map[string]any) (string, error) {
 		return "", err
 	}
 	return jsonString(map[string]any{"role": role, "channel": ref, "documents": docs}), nil
+}
+
+// toolGraph returns one document's typed L2 relations from a release — the
+// graph-response view (structure, not prose). It answers "how does this fact
+// relate to the rest of the corpus": what it supersedes/elaborates, and (via
+// search's graph annotation) what supersedes/contradicts it.
+func (m *mcpServer) toolGraph(args map[string]any) (string, error) {
+	slug := argStr(args, "slug", "")
+	if slug == "" {
+		return "", fmt.Errorf("slug is required")
+	}
+	id, err := knowledge.ParseSlugID(slug)
+	if err != nil {
+		return "", err
+	}
+	ref := argStr(args, "channel", truth.ChannelStable)
+	limit := argInt(args, "limit", 20)
+
+	path, err := m.store.Resolve(ref)
+	if err != nil {
+		return "", err
+	}
+	db, err := truth.OpenRelease(path)
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+
+	doc, err := knowledge.DocByID(db, id)
+	if err != nil {
+		return "", fmt.Errorf("load %s: %w", slug, err)
+	}
+	edges, err := knowledge.TypedNeighbors(db, id, limit)
+	if err != nil {
+		return "", err
+	}
+	type rel struct {
+		Kind       string  `json:"kind"`
+		Status     string  `json:"status"`
+		Target     string  `json:"target"`
+		Rationale  string  `json:"rationale,omitempty"`
+		Model      string  `json:"model,omitempty"`
+		Confidence float64 `json:"confidence"`
+	}
+	rels := make([]rel, 0, len(edges))
+	for _, e := range edges {
+		dst, _ := knowledge.DocByID(db, e.Dst)
+		rels = append(rels, rel{e.Kind, e.Status, dst.Slug(), e.Rationale, e.Model, e.Weight})
+	}
+	return jsonString(map[string]any{"slug": doc.Slug(), "title": doc.Title, "channel": ref, "relations": rels}), nil
 }
 
 func (m *mcpServer) toolDiffReleases(args map[string]any) (string, error) {
@@ -545,6 +599,7 @@ func jsonString(v any) string {
 func toolSchemas() []map[string]any {
 	strProp := func(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 	intProp := func(desc string) map[string]any { return map[string]any{"type": "integer", "description": desc} }
+	boolProp := func(desc string) map[string]any { return map[string]any{"type": "boolean", "description": desc} }
 
 	tool := func(name, desc string, props map[string]any, required ...string) map[string]any {
 		return map[string]any{
@@ -560,12 +615,14 @@ func toolSchemas() []map[string]any {
 
 	return []map[string]any{
 		// readonly
-		tool("search", "Ground a query against a release of team truth (specs, decisions, changelog, code map). Hybrid FTS+vector by default.",
+		tool("search", "Ground a query against a release of team truth (specs, decisions, changelog, code map). Hybrid FTS+vector by default. Set graph>0 to annotate each hit with its typed knowledge-graph relations (supersedes/contradicts/...) — the ⚠ superseded/contradicted signal tells you a hit is obsolete/disputed before you ground on it.",
 			map[string]any{
 				"query":   strProp("search query"),
 				"channel": strProp("stable|testing|unstable or a release version (default stable)"),
 				"mode":    strProp("fts|vec|hybrid|regex (default hybrid)"),
 				"limit":   intProp("max results (default 10)"),
+				"graph":   intProp("annotate each hit with up to N typed L2 relations (0 = off)"),
+				"cluster": boolProp("fold duplicate hits into their top-ranked representative"),
 			}, "query"),
 		tool("recall", "Retrieve truth by topic (thin alias over search) for grounding an agent before it acts.",
 			map[string]any{
@@ -575,8 +632,8 @@ func toolSchemas() []map[string]any {
 			}, "topic"),
 		tool("suggest_terms", "Discover which terms actually exist in the corpus's FTS index for a prefix, ranked by frequency — look this up BEFORE searching so you use real corpus terms (and see inflected/foreign-language forms) instead of guessing.",
 			map[string]any{
-				"prefix":      strProp("term prefix, e.g. 'sort' or 'сорт'"),
-				"channel":     strProp("stable|testing|unstable or a release version"),
+				"prefix":          strProp("term prefix, e.g. 'sort' or 'сорт'"),
+				"channel":         strProp("stable|testing|unstable or a release version"),
 				"relative_to":     strProp("optional: compute IDF relative to a partition (a doc type, e.g. reference_ru) for a mixed-language/source corpus"),
 				"include_numbers": map[string]any{"type": "boolean", "description": "include pure-digit tokens (off by default — they are useless search keys)"},
 				"limit":           intProp("max terms (default 20)"),
@@ -598,6 +655,12 @@ func toolSchemas() []map[string]any {
 			map[string]any{
 				"record_id": intProp("the recorded document's id (returned by record/ingest)"),
 			}, "record_id"),
+		tool("graph", "Show one document's typed knowledge-graph relations (supersedes/contradicts/elaborates/...) — structure, not prose. Use it to check whether a fact is obsoleted, elaborated, or disputed before grounding on it.",
+			map[string]any{
+				"slug":    strProp("document slug, e.g. SPEC-42"),
+				"channel": strProp("stable|testing|unstable or a release version"),
+				"limit":   intProp("max relations (default 20)"),
+			}, "slug"),
 
 		// rewrite
 		tool("ingest", "Add a document to the write-log (spec/ТЗ/lib_doc/decision/…). Rides the next publish.",

@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased — Stage 3 (graph-aware retrieval)
+## Unreleased — Stage 3 + server parity (the graph, everywhere)
 
-Wire the L2 knowledge graph into `Search`, which until now built the graph but
-never read it at retrieval time.
+Wire the L2 knowledge graph into retrieval, and bring the whole graph surface
+(build + read) to the agent-facing `distill-server` — until now it existed only
+in the single-file `distill` CLI.
+
+### Graph-aware retrieval (Stage 3)
 
 - **`SearchOpts.GraphExpand N`** — annotate each returned `Result` with up to N
   typed relations incident to it (`Result.Relations`), oriented relative to the
@@ -12,11 +15,22 @@ never read it at retrieval time.
   Default 0 leaves output byte-identical to before (regression-safe).
 - **`SearchOpts.Cluster`** — fold hits the graph marks `duplicates` of a
   higher-ranked result into that result (`Result.Folded`), de-crowding the top-N.
-- **CLI** — `distill search --graph N` renders relation chains
-  (`→ supersedes → SPEC-2`) and a `⚠ superseded`/`⚠ contradicted` banner;
-  `--cluster` renders `⊕ folds SPEC-X (duplicates)`; JSON gains `relations`,
-  `superseded`, `contradicted`, `folded`. Only returned docs are expanded
-  (O(limit) edge lookups, after truncation).
+- **`distill search --graph N [--cluster]`** renders relation chains
+  (`→ supersedes → SPEC-2`), a `⚠ superseded`/`⚠ contradicted` banner, and
+  `⊕ folds SPEC-X (duplicates)`; JSON gains `relations`/`superseded`/
+  `contradicted`/`folded`. Only returned docs are expanded (O(limit) lookups).
+
+### distill-server parity
+
+- **Read:** MCP `search` / HTTP `/search` gain `graph`/`cluster` params (inputs
+  advertised in the tool schema); new `graph` MCP tool and `/graph?slug=` HTTP
+  endpoint return a doc's typed relations from a release — mirror of `distill
+  graph`. A typed edge seeded on the write-log survives `publish` (VACUUM INTO)
+  into the immutable release and surfaces through all three interfaces.
+- **Build:** `distill-server digest --model <ollama>` runs the L2 digester over
+  the write-log, so `publish` bakes the graph into the release; `distill-server
+  graph <SLUG>` inspects it. tools/list count 14 → 15.
+
 - Refreshed `internal/knowledge/AGENTS.md` to the current package surface.
 
 ## v0.3.0 — 2026-07-18

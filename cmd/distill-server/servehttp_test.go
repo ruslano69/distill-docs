@@ -103,6 +103,65 @@ func TestHTTPSearch(t *testing.T) {
 	}
 }
 
+// TestHTTPGraph proves the /graph endpoint returns a doc's typed relations from
+// the served release (edge seeded on the write-log, carried in by publish).
+func TestHTTPGraph(t *testing.T) {
+	dir := t.TempDir()
+	store, err := truth.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	wl, err := knowledge.Open(store.WriteLogPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledge.Add(wl, "Auth v1", "authentication uses api keys", "spec", "{}", nil)   // SPEC-1
+	knowledge.Add(wl, "Auth v2", "authentication uses oauth flow", "spec", "{}", nil) // SPEC-2
+	tx, _ := wl.Begin()
+	knowledge.UpsertTypedEdge(tx, knowledge.Edge{Src: 2, Dst: 1, Weight: 0.9, Kind: "supersedes", Status: "proposed"})
+	tx.Commit()
+	wl.Close()
+
+	if _, err := store.Publish("2026.07", "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChannel(truth.ChannelStable, "2026.07"); err != nil {
+		t.Fatal(err)
+	}
+	srv := &server{store: store, channel: truth.ChannelStable, poolSize: 4, embc: embed.New("", "")}
+	rel, err := srv.openRelease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.cur.Store(rel)
+	t.Cleanup(func() { rel.db.Close() })
+	ts := httptest.NewServer(srv.routes())
+	t.Cleanup(ts.Close)
+
+	var g struct {
+		Slug      string `json:"slug"`
+		Relations []struct {
+			Kind, Target, Status string
+		} `json:"relations"`
+	}
+	if code := getJSON(t, ts.URL+"/graph?slug=SPEC-2", &g); code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if g.Slug != "SPEC-2" || len(g.Relations) != 1 {
+		t.Fatalf("want SPEC-2 with 1 relation, got %+v", g)
+	}
+	if g.Relations[0].Kind != "supersedes" || g.Relations[0].Target != "SPEC-1" {
+		t.Errorf("relation = %+v, want supersedes→SPEC-1", g.Relations[0])
+	}
+
+	// A bad slug is a 400, not a 500.
+	if code := getJSON(t, ts.URL+"/graph?slug=notaslug", nil); code != http.StatusBadRequest {
+		t.Errorf("malformed slug status = %d, want 400", code)
+	}
+}
+
 func TestHTTPSearchModes(t *testing.T) {
 	ts := newTestReadServer(t)
 	// fts mode works without an embedder; hybrid degrades to FTS the same way.
@@ -124,11 +183,11 @@ func TestHTTPSearchValidation(t *testing.T) {
 		url  string
 		want int
 	}{
-		{"/search", http.StatusBadRequest},                 // no q
-		{"/search?q=x&limit=abc", http.StatusBadRequest},   // bad limit
-		{"/search?q=x&limit=0", http.StatusBadRequest},     // limit < 1
-		{"/search?q=x&mode=bogus", http.StatusBadRequest},  // unknown mode
-		{"/search?q=x&mode=vec", http.StatusBadRequest},    // vec with no embedding/embedder
+		{"/search", http.StatusBadRequest},                // no q
+		{"/search?q=x&limit=abc", http.StatusBadRequest},  // bad limit
+		{"/search?q=x&limit=0", http.StatusBadRequest},    // limit < 1
+		{"/search?q=x&mode=bogus", http.StatusBadRequest}, // unknown mode
+		{"/search?q=x&mode=vec", http.StatusBadRequest},   // vec with no embedding/embedder
 	}
 	for _, c := range cases {
 		if code := getJSON(t, ts.URL+c.url, nil); code != c.want {

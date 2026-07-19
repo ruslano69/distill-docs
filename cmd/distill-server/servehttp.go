@@ -150,6 +150,8 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				RoleAffinity:      atofDefault(q.Get("role_affinity"), 0),
 				ExcludeSuperseded: q.Get("exclude_superseded") == "true",
 			},
+			GraphExpand: atoiDefault(q.Get("graph"), 0),
+			Cluster:     q.Get("cluster") == "true",
 		})
 	case "regex":
 		results, err = knowledge.SearchRegex(db, query, limit, q.Get("type"))
@@ -218,6 +220,54 @@ func (s *server) handleContext(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, docs)
 }
 
+// handleGraph returns one document's typed L2 relations from the current
+// release — the graph-response view, HTTP face of the MCP `graph` tool and the
+// CLI `distill graph`.
+func (s *server) handleGraph(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	slug := q.Get("slug")
+	if slug == "" {
+		httpError(w, http.StatusBadRequest, "slug is required")
+		return
+	}
+	id, err := knowledge.ParseSlugID(slug)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	limit, err := clampLimit(q.Get("limit"), 20)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	db := s.cur.Load().db
+	doc, err := knowledge.DocByID(db, id)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "load %s: %v", slug, err)
+		return
+	}
+	edges, err := knowledge.TypedNeighbors(db, id, limit)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "graph: %v", err)
+		return
+	}
+	type rel struct {
+		Kind       string  `json:"kind"`
+		Status     string  `json:"status"`
+		Target     string  `json:"target"`
+		Rationale  string  `json:"rationale,omitempty"`
+		Model      string  `json:"model,omitempty"`
+		Confidence float64 `json:"confidence"`
+	}
+	rels := make([]rel, 0, len(edges))
+	for _, e := range edges {
+		dst, _ := knowledge.DocByID(db, e.Dst)
+		rels = append(rels, rel{e.Kind, e.Status, dst.Slug(), e.Rationale, e.Model, e.Weight})
+	}
+	s.served.Add(1)
+	writeJSON(w, http.StatusOK, map[string]any{"slug": doc.Slug(), "title": doc.Title, "relations": rels})
+}
+
 // handleReleases and handleChannels expose the control-plane listings — these
 // read the control DB (release/channel metadata), not the served release, so
 // they answer regardless of which release is currently swapped in.
@@ -257,6 +307,7 @@ func (s *server) routes() http.Handler {
 	get("/search", s.handleSearch)
 	get("/read", s.handleRead)
 	get("/context", s.handleContext)
+	get("/graph", s.handleGraph)
 	get("/releases", s.handleReleases)
 	get("/channels", s.handleChannels)
 	return mux
