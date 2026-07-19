@@ -213,3 +213,21 @@ func TestMCPErrorSemantics(t *testing.T) {
 		t.Fatalf("unknown method should be JSON-RPC -32601, got %+v", resp[2].Error)
 	}
 }
+
+// TestJSONString covers the success path and, crucially, that a marshal
+// failure now propagates as an error instead of silently degrading to an
+// empty string an agent could mistake for a real, empty result.
+func TestJSONString(t *testing.T) {
+	got, err := jsonString(map[string]any{"a": 1})
+	if err != nil {
+		t.Fatalf("jsonString: %v", err)
+	}
+	if got != `{"a":1}` {
+		t.Errorf("jsonString = %q", got)
+	}
+
+	// chan is not JSON-marshalable — this must surface as an error, not "".
+	if _, err := jsonString(make(chan int)); err == nil {
+		t.Error("jsonString should error on an unmarshalable value, not silently return \"\"")
+	}
+}

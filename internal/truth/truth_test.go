@@ -368,3 +368,71 @@ func TestPruneReleases_FewerReleasesThanKeepIsNoop(t *testing.T) {
 		t.Fatalf("want no-op when releases < keep, pruned %v", pruned)
 	}
 }
+
+// TestPublish_RejectsPathTraversal locks in the path-traversal fix: a version
+// containing path separators must never reach VACUUM INTO. Verified live (see
+// review) that "../../../../../../etc/passwd" resolves clean out of the store
+// root via filepath.Join/Clean — Publish must refuse it before that point.
+func TestPublish_RejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	defer s.Close()
+	seedWriteLog(t, s, [2]string{"D", "c"})
+
+	malicious := []string{
+		"../../evil",
+		"/../../evil",
+		"../../../../../../etc/passwd",
+		"a/b",
+		`a\b`,
+		"",
+		"   ",
+	}
+	for _, v := range malicious {
+		if _, err := s.Publish(v, ""); err == nil {
+			t.Errorf("Publish(%q) should be rejected, got no error", v)
+		}
+	}
+	// No file should have escaped the releases directory.
+	entries, _ := os.ReadDir(filepath.Join(dir, "releases"))
+	if len(entries) != 0 {
+		t.Errorf("a malicious version created a file: %v", entries)
+	}
+	// A well-formed version (letters, digits, dots, hyphens, underscores) is
+	// still accepted — the fix must not be overly restrictive.
+	if _, err := s.Publish("2026.07.1-rc_1", ""); err != nil {
+		t.Errorf("well-formed version should be accepted, got %v", err)
+	}
+}
+
+// TestResolve_RejectsPathTraversal covers the read-side fallback: an
+// unrecognized "channel" (Resolve's ref) is treated as a release-version
+// lookup and must be validated the same way Publish validates on write.
+func TestResolve_RejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	defer s.Close()
+
+	if _, err := s.Resolve("../../../../etc/passwd"); err == nil {
+		t.Error("Resolve should reject a path-traversal ref")
+	}
+	// A merely-nonexistent (but well-formed) version still 404s normally.
+	if _, err := s.Resolve("2099.01"); err == nil {
+		t.Error("Resolve should error on a nonexistent-but-valid version")
+	}
+}
+
+func TestValidVersion(t *testing.T) {
+	valid := []string{"2026.07", "2026.07.1", "v1.2.3-rc1", "a_b-c.1"}
+	for _, v := range valid {
+		if !ValidVersion(v) {
+			t.Errorf("ValidVersion(%q) = false, want true", v)
+		}
+	}
+	invalid := []string{"", "a/b", `a\b`, "../x", "a b", "a\x00b"}
+	for _, v := range invalid {
+		if ValidVersion(v) {
+			t.Errorf("ValidVersion(%q) = true, want false", v)
+		}
+	}
+}

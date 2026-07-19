@@ -90,3 +90,43 @@ func TestRelationsView(t *testing.T) {
 		t.Errorf("want 0 relations for SPEC-1 (only has an incoming edge), got %d", len(none))
 	}
 }
+
+// TestViewRelations_BatchResolvesDistinctAndDuplicateTargets covers the
+// batched fetch directly: multiple edges (including two pointing at the same
+// target, and one pointing at a nonexistent doc) resolved in one call.
+func TestViewRelations_BatchResolvesDistinctAndDuplicateTargets(t *testing.T) {
+	db := openDB(t)
+	Add(db, "Source", "x", "spec", "{}", nil)  // 1
+	Add(db, "TargetA", "y", "spec", "{}", nil) // 2
+	Add(db, "TargetB", "z", "spec", "{}", nil) // 3
+
+	edges := []Edge{
+		{Src: 1, Dst: 2, Kind: "elaborates", Weight: 0.9},
+		{Src: 1, Dst: 3, Kind: "same_topic", Weight: 0.8},
+		{Src: 1, Dst: 2, Kind: "duplicates", Weight: 0.7},   // second edge to the SAME target
+		{Src: 1, Dst: 999, Kind: "same_topic", Weight: 0.5}, // target doesn't exist
+	}
+	views := ViewRelations(db, edges)
+	if len(views) != 4 {
+		t.Fatalf("want 4 views (one per edge), got %d", len(views))
+	}
+	if views[0].TargetSlug != "SPEC-2" || views[0].TargetTitle != "TargetA" {
+		t.Errorf("views[0] = %+v", views[0])
+	}
+	if views[1].TargetSlug != "SPEC-3" || views[1].TargetTitle != "TargetB" {
+		t.Errorf("views[1] = %+v", views[1])
+	}
+	// Same target resolved consistently for both edges pointing at it.
+	if views[2].TargetSlug != "SPEC-2" || views[2].TargetTitle != "TargetA" {
+		t.Errorf("views[2] (duplicate target) = %+v", views[2])
+	}
+	// Nonexistent target falls back to the id-N label, empty title.
+	if views[3].TargetSlug != "id-999" || views[3].TargetTitle != "" {
+		t.Errorf("views[3] (missing target) = %+v", views[3])
+	}
+
+	// Empty input is a no-op, not a query.
+	if got := ViewRelations(db, nil); len(got) != 0 {
+		t.Errorf("ViewRelations(nil) = %v, want empty", got)
+	}
+}

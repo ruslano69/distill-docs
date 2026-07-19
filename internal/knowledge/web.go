@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -169,7 +170,7 @@ func fetchPage(client *http.Client, pageURL, ua string, opts ChunkOpts) ([]Chunk
 		return nil, nil, nil, err
 	}
 
-	doc, err := html.Parse(strings.NewReader(string(body)))
+	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, nil, err
 	}

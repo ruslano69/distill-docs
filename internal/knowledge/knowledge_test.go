@@ -205,6 +205,29 @@ func TestHybridSearch(t *testing.T) {
 	}
 }
 
+// TestHybridSearch_DocTypeFiltersBothArms locks in the fix for an asymmetry
+// where SearchHybrid filtered the vector arm by docType but not the FTS arm —
+// an FTS hit of a non-matching type could still be fused into the results via
+// RRF, silently defeating the caller's requested type filter.
+func TestHybridSearch_DocTypeFiltersBothArms(t *testing.T) {
+	db := openDB(t)
+	// Both docs are strong FTS AND vector matches for the query below, but
+	// only one has the requested type — a leak means the other one appears.
+	Add(db, "auth guide", "oauth token refresh flow", "spec", "{}", []float32{1, 0})
+	Add(db, "auth notes", "oauth token refresh flow", "note", "{}", []float32{1, 0})
+
+	results, err := SearchHybrid(db, "oauth token refresh", []float32{1, 0}, 10, MetricCosine, "spec", false)
+	if err != nil {
+		t.Fatalf("SearchHybrid: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("docType=spec should return exactly 1 result (the FTS arm must filter too), got %d: %+v", len(results), results)
+	}
+	if results[0].Type != "spec" {
+		t.Errorf("leaked a non-matching type into filtered results: %+v", results[0])
+	}
+}
+
 func TestCosineDistance(t *testing.T) {
 	cases := []struct {
 		a, b []float32

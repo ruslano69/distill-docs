@@ -210,6 +210,7 @@ func migrateMetadataColumns(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	existing := map[string]bool{}
 	for rows.Next() {
 		var cid int
@@ -218,7 +219,6 @@ func migrateMetadataColumns(db *sql.DB) error {
 		var dflt sql.NullString
 		var pk, hidden int
 		if err = rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk, &hidden); err != nil {
-			rows.Close()
 			return err
 		}
 		existing[name] = true
@@ -226,7 +226,6 @@ func migrateMetadataColumns(db *sql.DB) error {
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	rows.Close()
 
 	for _, c := range metadataGeneratedColumns {
 		if !existing[c.name] {

@@ -57,7 +57,9 @@ func (s *server) openRelease() (*activeRelease, error) {
 // channel is repointed. The old handle is closed after a grace delay so any
 // in-flight query on it finishes first (immutable files never conflict).
 func (s *server) watchChannel(interval, grace time.Duration) {
-	for range time.Tick(interval) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
 		version, err := s.store.ChannelRelease(s.channel)
 		if err != nil || version == s.cur.Load().version {
 			continue
@@ -175,8 +177,10 @@ func runServe(s *truth.Store, embc *embed.Client, args []string) {
 
 	go srv.watchChannel(time.Duration(*swapMs)*time.Millisecond, 2*time.Second)
 	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 		var prev int64
-		for range time.Tick(time.Second) {
+		for range ticker.C {
 			cur := srv.served.Load()
 			fmt.Fprintf(os.Stderr, "  %d req/s (release %s)\n", cur-prev, srv.cur.Load().version)
 			prev = cur
