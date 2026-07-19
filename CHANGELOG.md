@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — digester direction/confidence fix
+
+- **Fixed two related digester correctness bugs** found live against
+  `gemma4:12b` on a real supersedes case: (1) the classify prompt could invert
+  the `supersedes` direction (asserting the older doc replaces the newer one,
+  so the `⚠ superseded` banner landed on the current spec instead of the
+  obsolete one); (2) under loose `"json"` mode the model sometimes produced
+  syntactically valid JSON that omitted `confidence` entirely — silently
+  decoded as `0`, this discarded an otherwise-correct classification below any
+  confidence threshold and permanently marked the pair digested.
+- **Direction:** the classify prompt now requires content evidence for
+  `supersedes` (explicit deprecation/replacement language), a worked example of
+  correct direction encoding, and reasoning (`rationale`) ordered before
+  `kind`/`direction` so the model commits to its evidence first. Each
+  document's added-date is now included as a secondary (never primary) signal.
+- **Confidence:** `internal/llm.Client.GenerateJSON` gained a `schema` param —
+  passing a JSON Schema with a `required` list (Ollama's structured-output
+  mode) grammar-constrains generation to include every required field, instead
+  of the bare `"json"` string that only guarantees syntactic validity.
+  `digest.Classify` now also treats a missing `confidence` on an asserted
+  relation as an error (pair retried next pass), not a silent 0.
+- Re-verified live on the exact scenario that surfaced the bug: the digester
+  now correctly identifies the newer OAuth spec as superseding the older
+  static-key spec, with confidence populated, and `search --graph` renders the
+  `⚠ superseded` banner on the right document.
+
 ## Unreleased — shared metadata binder + per-corpus settings
 
 - **`internal/docmeta`** — one home for a document's provenance + Stage-1 ranking

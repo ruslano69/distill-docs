@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ruslano69/distill-docs/internal/knowledge"
@@ -218,6 +219,78 @@ func TestClassify_ValidatesKindAndClampsConfidence(t *testing.T) {
 		}
 		if rel.Kind != tc.wantKind || rel.Confidence != tc.wantConf {
 			t.Errorf("%s → kind=%q conf=%v, want %q/%v", tc.raw, rel.Kind, rel.Confidence, tc.wantKind, tc.wantConf)
+		}
+	}
+}
+
+// TestClassify_MissingConfidenceIsErrorNotZero pins down a real failure mode
+// found live against gemma4:12b: under loose "json" mode the model produced
+// syntactically valid JSON that stopped after "direction" and never emitted
+// "confidence" at all. Unmarshaled into a plain float64 field that silently
+// zeroes, a genuinely correct classification (with a spot-on rationale) got
+// discarded by the confidence threshold and the pair was marked digested —
+// permanently losing a right answer. A missing confidence on an asserted
+// relation must be an error (pair retried), not a silent 0. kind="none" needs
+// no confidence at all (no relation is being asserted).
+func TestClassify_MissingConfidenceIsErrorNotZero(t *testing.T) {
+	client := fakeLLM(t, `{"rationale":"B deprecates A","kind":"supersedes","direction":"b_to_a"}`)
+	if _, err := Classify(context.Background(), client, knowledge.Doc{ID: 1}, knowledge.Doc{ID: 2}); err == nil {
+		t.Fatal("missing confidence on an asserted relation should error, not silently become confidence=0")
+	}
+
+	noneClient := fakeLLM(t, `{"kind":"none"}`)
+	rel, err := Classify(context.Background(), noneClient, knowledge.Doc{ID: 1}, knowledge.Doc{ID: 2})
+	if err != nil {
+		t.Fatalf("kind=none with no confidence should not error: %v", err)
+	}
+	if rel.Kind != KindNone {
+		t.Errorf("kind = %q, want none", rel.Kind)
+	}
+}
+
+// TestFormatAddedDate covers the secondary temporal signal fed to the
+// classifier: a real timestamp renders as a short date, an absent one (0) as
+// "unknown" rather than the misleading 1970 epoch.
+func TestFormatAddedDate(t *testing.T) {
+	if got := formatAddedDate(0); got != "unknown" {
+		t.Errorf("zero timestamp = %q, want unknown", got)
+	}
+	if got := formatAddedDate(-5); got != "unknown" {
+		t.Errorf("negative timestamp = %q, want unknown", got)
+	}
+	if got := formatAddedDate(1_752_710_400); got != "2025-07-17" {
+		t.Errorf("formatAddedDate(1752710400) = %q, want 2025-07-17", got)
+	}
+}
+
+// TestBuildPrompt_IncludesAddedDatesAndSlugs locks in the prompt content the
+// direction fix depends on: each document's slug/type and its added date (the
+// secondary tiebreaker signal), so a future edit can't silently drop them.
+func TestBuildPrompt_IncludesAddedDatesAndSlugs(t *testing.T) {
+	a := knowledge.Doc{ID: 1, Type: "spec", Title: "Auth v1", Content: "static keys", CreatedAt: 1_752_710_400}
+	b := knowledge.Doc{ID: 2, Type: "spec", Title: "Auth v2", Content: "oauth flow", CreatedAt: 1_752_796_800}
+	got := buildPrompt(a, b)
+	for _, want := range []string{"SPEC-1", "SPEC-2", "added=2025-07-17", "added=2025-07-18", "Auth v1", "Auth v2"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestSystemPrompt_HasDirectionSafeguards locks in the specific prompt-
+// engineering fix for the observed direction bug (gemma4:12b once inverted a
+// supersedes relation): content-cue-driven supersedes evidence, a worked
+// direction example, and reasoning ("rationale") ordered before kind/direction
+// so the model commits to its evidence before encoding the direction.
+func TestSystemPrompt_HasDirectionSafeguards(t *testing.T) {
+	for _, want := range []string{
+		"deprecated", "replaces X", // content-cue vocabulary for supersedes
+		`{"rationale":`, // rationale is the first requested field (reasoning before encoding)
+		"MUST match the document you named as the subject", // direction/rationale consistency instruction
+		"b_to_a", // the worked example's direction encoding
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Errorf("systemPrompt missing %q", want)
 		}
 	}
 }
