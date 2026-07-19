@@ -2,7 +2,11 @@ package knowledge
 
 import (
 	"database/sql"
+	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
+	"sort"
 	"strconv"
 )
 
@@ -103,4 +107,61 @@ func (r *FlagResolver) Int(flagName, key string, cur int) int {
 		}
 	}
 	return cur
+}
+
+// SettingFlag pairs a CLI flag name with the setting key/value it writes when
+// explicitly passed — the input to ApplySettingFlags.
+type SettingFlag struct{ FlagName, Key, Value string }
+
+// ApplySettingFlags writes each entry in pairs whose flag was explicitly
+// passed on this invocation (per fs.Visit, called after fs.Parse) as a corpus
+// setting, returning how many changed. This is the `distill config` /
+// `distill-server config` write path — shared so "only touch what the user
+// actually typed" logic lives in one place instead of two near-identical
+// copies (the discrepancy this consolidation closes: distill-server's config
+// wrote two extra fields — role_tags/source_version — that distill's did not
+// expose; each caller still builds its own pairs list to reflect that).
+func ApplySettingFlags(db *sql.DB, fs *flag.FlagSet, pairs []SettingFlag) (int, error) {
+	passed := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { passed[f.Name] = true })
+	changed := 0
+	for _, p := range pairs {
+		if !passed[p.FlagName] {
+			continue
+		}
+		if err := SetSetting(db, p.Key, p.Value); err != nil {
+			return changed, fmt.Errorf("set %s: %w", p.Key, err)
+		}
+		changed++
+	}
+	return changed, nil
+}
+
+// PrintSettings renders the corpus's stored settings to w: JSON when jsonOut,
+// otherwise a sorted "key value" listing (or a one-line note when there are
+// none). Pure data rendering — callers report anything beyond the listing
+// itself (e.g. "updated N setting(s)") on their own, since that's a status
+// message rather than the settings data.
+func PrintSettings(w io.Writer, db *sql.DB, jsonOut bool) error {
+	all, err := AllSettings(db)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return json.NewEncoder(w).Encode(all)
+	}
+	if len(all) == 0 {
+		fmt.Fprintln(w, "no corpus settings set (add/ingest uses built-in defaults)")
+		return nil
+	}
+	keys := make([]string, 0, len(all))
+	for k := range all {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(w, "corpus settings:")
+	for _, k := range keys {
+		fmt.Fprintf(w, "  %-16s %s\n", k, all[k])
+	}
+	return nil
 }

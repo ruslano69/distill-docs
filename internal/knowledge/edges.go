@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"database/sql"
+	"fmt"
 	"sort"
 )
 
@@ -152,6 +153,58 @@ func TypedNeighbors(db *sql.DB, id int64, limit int) ([]Edge, error) {
 	}
 	defer rows.Close()
 	return scanEdges(rows)
+}
+
+// RelationView is one typed relation resolved for display: the edge plus its
+// target doc's slug, ready to render as text or JSON. This is the shared shape
+// behind the graph-response view — `distill graph`, `distill-server graph`,
+// the MCP `graph` tool, and the HTTP `/graph` endpoint all render the same
+// data; before RelationsView existed each of those four rebuilt it by hand.
+type RelationView struct {
+	Kind        string
+	Status      string
+	TargetSlug  string
+	TargetTitle string
+	Rationale   string
+	Model       string
+	Confidence  float64
+}
+
+// ViewRelations resolves each edge's target to a display-ready slug/title —
+// split out from RelationsView so a caller that needs to distinguish "subject
+// doc not found" (404) from "edge query failed" (500), like the HTTP /graph
+// endpoint, can still share this step instead of rebuilding its own
+// DocByID-per-edge loop.
+func ViewRelations(db *sql.DB, edges []Edge) []RelationView {
+	views := make([]RelationView, 0, len(edges))
+	for _, e := range edges {
+		// A target whose doc was deleted after the edge was written falls back
+		// to a bare "id-N" label rather than an empty/wrong slug.
+		slug, title := fmt.Sprintf("id-%d", e.Dst), ""
+		if dst, err := DocByID(db, e.Dst); err == nil {
+			slug, title = dst.Slug(), dst.Title
+		}
+		views = append(views, RelationView{
+			Kind: e.Kind, Status: e.Status, TargetSlug: slug, TargetTitle: title,
+			Rationale: e.Rationale, Model: e.Model, Confidence: e.Weight,
+		})
+	}
+	return views
+}
+
+// RelationsView loads doc id and its typed L2 relations, resolving each
+// edge's target to a slug in the same call — the convenience path for callers
+// (CLI, MCP) that don't need to distinguish which of the two lookups failed.
+func RelationsView(db *sql.DB, id int64, limit int) (Doc, []RelationView, error) {
+	doc, err := DocByID(db, id)
+	if err != nil {
+		return Doc{}, nil, err
+	}
+	edges, err := TypedNeighbors(db, id, limit)
+	if err != nil {
+		return doc, nil, err
+	}
+	return doc, ViewRelations(db, edges), nil
 }
 
 // relationsFor returns the typed (non-knn) edges incident to doc id — both

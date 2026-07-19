@@ -18,10 +18,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/ruslano69/distill-docs/internal/cliutil"
 	"github.com/ruslano69/distill-docs/internal/codemap"
 	"github.com/ruslano69/distill-docs/internal/digest"
 	"github.com/ruslano69/distill-docs/internal/docmeta"
@@ -155,50 +155,24 @@ func runConfig(s *truth.Store, args []string) {
 	defer db.Close()
 
 	// flag name -> (setting key, value); write only the flags actually passed.
-	pairs := []struct{ flag, key, val string }{
-		{"chunk-size", knowledge.SettingChunkSize, strconv.Itoa(*chunkSize)},
-		{"chunk-overlap", knowledge.SettingChunkOverlap, strconv.Itoa(*chunkOverlap)},
-		{"strip-runes", knowledge.SettingStripRunes, *stripRunes},
-		{"type", knowledge.SettingType, *docType},
-		{"role-tags", knowledge.SettingRoleTags, *roleTags},
-		{"author", knowledge.SettingAuthor, *author},
-		{"source-version", knowledge.SettingSourceVersion, *sourceVersion},
+	pairs := []knowledge.SettingFlag{
+		{FlagName: "chunk-size", Key: knowledge.SettingChunkSize, Value: strconv.Itoa(*chunkSize)},
+		{FlagName: "chunk-overlap", Key: knowledge.SettingChunkOverlap, Value: strconv.Itoa(*chunkOverlap)},
+		{FlagName: "strip-runes", Key: knowledge.SettingStripRunes, Value: *stripRunes},
+		{FlagName: "type", Key: knowledge.SettingType, Value: *docType},
+		{FlagName: "role-tags", Key: knowledge.SettingRoleTags, Value: *roleTags},
+		{FlagName: "author", Key: knowledge.SettingAuthor, Value: *author},
+		{FlagName: "source-version", Key: knowledge.SettingSourceVersion, Value: *sourceVersion},
 	}
-	passed := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { passed[f.Name] = true })
-	changed := 0
-	for _, p := range pairs {
-		if passed[p.flag] {
-			if err := knowledge.SetSetting(db, p.key, p.val); err != nil {
-				fatalf("set %s: %v", p.key, err)
-			}
-			changed++
-		}
-	}
-
-	all, err := knowledge.AllSettings(db)
+	changed, err := knowledge.ApplySettingFlags(db, fs, pairs)
 	if err != nil {
-		fatalf("read settings: %v", err)
+		fatalf("%v", err)
 	}
-	if *jsonOut {
-		json.NewEncoder(os.Stdout).Encode(all)
-		return
-	}
-	if changed > 0 {
+	if !*jsonOut && changed > 0 {
 		fmt.Fprintf(os.Stderr, "updated %d setting(s)\n", changed)
 	}
-	if len(all) == 0 {
-		fmt.Fprintln(os.Stderr, "no corpus settings set (ingest uses built-in defaults)")
-		return
-	}
-	keys := make([]string, 0, len(all))
-	for k := range all {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	fmt.Fprintln(os.Stderr, "corpus settings:")
-	for _, k := range keys {
-		fmt.Printf("  %-16s %s\n", k, all[k])
+	if err := knowledge.PrintSettings(os.Stdout, db, *jsonOut); err != nil {
+		fatalf("read settings: %v", err)
 	}
 }
 
@@ -238,30 +212,13 @@ func runDigestServer(s *truth.Store, args []string) {
 		fatalf("digest: %v", err)
 	}
 
-	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(map[string]any{
-			"candidates": rep.Candidates, "skipped": rep.Skipped, "classified": rep.Classified,
-			"edges_written": rep.EdgesWritten, "errors": rep.Errors, "by_kind": rep.ByKind,
-		})
-		return
-	}
-	fmt.Printf("digest: %d candidates, %d skipped (clean), %d classified, %d edges written",
-		rep.Candidates, rep.Skipped, rep.Classified, rep.EdgesWritten)
-	if rep.Errors > 0 {
-		fmt.Printf(", %d errors", rep.Errors)
-	}
-	fmt.Println()
-	for _, kind := range digest.Kinds {
-		if n := rep.ByKind[kind]; n > 0 {
-			fmt.Printf("  %-12s %d\n", kind, n)
+	digest.PrintReport(os.Stdout, rep, *jsonOut)
+	if !*jsonOut {
+		if rep.Candidates == 0 {
+			fmt.Fprintln(os.Stderr, "note: no candidates — the kNN geometry is empty (ingest with --embed-model to store vectors)")
+		} else {
+			fmt.Fprintln(os.Stderr, "note: edges live in the write-log — run `publish` to bake them into a release")
 		}
-	}
-	if rep.Candidates == 0 {
-		fmt.Fprintln(os.Stderr, "note: no candidates — the kNN geometry is empty (ingest with --embed-model to store vectors)")
-	} else {
-		fmt.Fprintln(os.Stderr, "note: edges live in the write-log — run `publish` to bake them into a release")
 	}
 }
 
@@ -274,15 +231,7 @@ func runGraphServer(s *truth.Store, args []string) {
 	limit := fs.Int("limit", 20, "max relations to show")
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	var positional string
-	rest := make([]string, 0, len(args))
-	for _, a := range args {
-		if positional == "" && a != "" && a[0] != '-' {
-			positional = a
-			continue
-		}
-		rest = append(rest, a)
-	}
+	positional, rest := cliutil.SplitPositionalFlag(args)
 	fs.Parse(rest)
 
 	target := *slug
@@ -307,24 +256,23 @@ func runGraphServer(s *truth.Store, args []string) {
 	}
 	defer db.Close()
 
-	doc, err := knowledge.DocByID(db, id)
-	if err != nil {
-		fatalf("load %s: %v", target, err)
-	}
-	edges, err := knowledge.TypedNeighbors(db, id, *limit)
+	doc, views, err := knowledge.RelationsView(db, id, *limit)
 	if err != nil {
 		fatalf("graph: %v", err)
 	}
 
 	if *jsonOut {
 		type rel struct {
-			Kind, Status, Target, Rationale, Model string
-			Confidence                             float64
+			Kind       string  `json:"kind"`
+			Status     string  `json:"status"`
+			Target     string  `json:"target"`
+			Rationale  string  `json:"rationale,omitempty"`
+			Model      string  `json:"model,omitempty"`
+			Confidence float64 `json:"confidence"`
 		}
-		rels := make([]rel, 0, len(edges))
-		for _, e := range edges {
-			dst, _ := knowledge.DocByID(db, e.Dst)
-			rels = append(rels, rel{e.Kind, e.Status, dst.Slug(), e.Rationale, e.Model, e.Weight})
+		rels := make([]rel, len(views))
+		for i, v := range views {
+			rels[i] = rel{v.Kind, v.Status, v.TargetSlug, v.Rationale, v.Model, v.Confidence}
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -333,19 +281,18 @@ func runGraphServer(s *truth.Store, args []string) {
 	}
 
 	fmt.Printf("%s  %s  (%s)\n", doc.Slug(), doc.Title, *channel)
-	if len(edges) == 0 {
+	if len(views) == 0 {
 		fmt.Println("  (no typed relations — run `digest` then `publish`)")
 		return
 	}
-	for _, e := range edges {
-		dst, err := knowledge.DocByID(db, e.Dst)
-		label := fmt.Sprintf("id-%d", e.Dst)
-		if err == nil {
-			label = fmt.Sprintf("%s %s", dst.Slug(), dst.Title)
+	for _, v := range views {
+		label := v.TargetSlug
+		if v.TargetTitle != "" {
+			label += " " + cliutil.Truncate(v.TargetTitle, 40)
 		}
-		fmt.Printf("  → %-12s → %s  [%s, %.2f]\n", e.Kind, label, e.Status, e.Weight)
-		if e.Rationale != "" {
-			fmt.Printf("      %q\n", e.Rationale)
+		fmt.Printf("  → %-12s → %s  [%s, conf %.2f]\n", v.Kind, label, v.Status, v.Confidence)
+		if v.Rationale != "" {
+			fmt.Printf("      %q\n", cliutil.Truncate(v.Rationale, 100))
 		}
 	}
 }
@@ -1060,24 +1007,11 @@ func runProvenance(s *truth.Store, args []string) {
 }
 
 func parseEmbedding(raw string) []float32 {
-	raw = strings.Trim(strings.TrimSpace(raw), "[]")
-	if raw == "" {
-		return nil
+	emb, err := cliutil.ParseEmbedding(raw)
+	if err != nil {
+		fatalf("%v", err)
 	}
-	parts := strings.Split(raw, ",")
-	out := make([]float32, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		f, err := strconv.ParseFloat(p, 32)
-		if err != nil {
-			fatalf("bad embedding value %q: %v", p, err)
-		}
-		out = append(out, float32(f))
-	}
-	return out
+	return emb
 }
 
 func printUsage() {

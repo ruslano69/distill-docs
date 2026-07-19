@@ -397,13 +397,9 @@ func (m *mcpServer) toolGraph(args map[string]any) (string, error) {
 	}
 	defer db.Close()
 
-	doc, err := knowledge.DocByID(db, id)
+	doc, views, err := knowledge.RelationsView(db, id, limit)
 	if err != nil {
 		return "", fmt.Errorf("load %s: %w", slug, err)
-	}
-	edges, err := knowledge.TypedNeighbors(db, id, limit)
-	if err != nil {
-		return "", err
 	}
 	type rel struct {
 		Kind       string  `json:"kind"`
@@ -413,10 +409,9 @@ func (m *mcpServer) toolGraph(args map[string]any) (string, error) {
 		Model      string  `json:"model,omitempty"`
 		Confidence float64 `json:"confidence"`
 	}
-	rels := make([]rel, 0, len(edges))
-	for _, e := range edges {
-		dst, _ := knowledge.DocByID(db, e.Dst)
-		rels = append(rels, rel{e.Kind, e.Status, dst.Slug(), e.Rationale, e.Model, e.Weight})
+	rels := make([]rel, len(views))
+	for i, v := range views {
+		rels[i] = rel{v.Kind, v.Status, v.TargetSlug, v.Rationale, v.Model, v.Confidence}
 	}
 	return jsonString(map[string]any{"slug": doc.Slug(), "title": doc.Title, "channel": ref, "relations": rels}), nil
 }

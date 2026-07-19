@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -214,6 +215,35 @@ type Report struct {
 	EdgesWritten int            // typed edges created (kind != none, above threshold)
 	ByKind       map[string]int // count per relation kind
 	Errors       int            // pairs the LLM/parse failed on (skipped, not fatal)
+}
+
+// PrintReport renders a Report the way every CLI face of the digester
+// (single-file `distill digest`, `distill-server digest`) does: JSON to w when
+// jsonOut, otherwise a one-line summary plus a per-kind tally. Extracted so
+// both binaries share one rendering instead of two copies drifting apart —
+// callers may print additional command-specific notes (e.g. a hint about
+// `publish`) after calling this.
+func PrintReport(w io.Writer, rep Report, jsonOut bool) {
+	if jsonOut {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.Encode(map[string]any{
+			"candidates": rep.Candidates, "skipped": rep.Skipped, "classified": rep.Classified,
+			"edges_written": rep.EdgesWritten, "errors": rep.Errors, "by_kind": rep.ByKind,
+		})
+		return
+	}
+	fmt.Fprintf(w, "digest: %d candidates, %d skipped (clean), %d classified, %d edges written",
+		rep.Candidates, rep.Skipped, rep.Classified, rep.EdgesWritten)
+	if rep.Errors > 0 {
+		fmt.Fprintf(w, ", %d errors", rep.Errors)
+	}
+	fmt.Fprintln(w)
+	for _, kind := range Kinds {
+		if n := rep.ByKind[kind]; n > 0 {
+			fmt.Fprintf(w, "  %-12s %d\n", kind, n)
+		}
+	}
 }
 
 // pairKey canonicalizes an undirected pair so (a,b) and (b,a) collapse to one

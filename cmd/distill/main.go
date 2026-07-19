@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ruslano69/distill-docs/internal/cliutil"
 	"github.com/ruslano69/distill-docs/internal/digest"
 	"github.com/ruslano69/distill-docs/internal/docmeta"
 	"github.com/ruslano69/distill-docs/internal/embed"
@@ -109,48 +109,22 @@ func runConfig(dbPath string, args []string) {
 	}
 	defer db.Close()
 
-	pairs := []struct{ flag, key, val string }{
-		{"chunk-size", knowledge.SettingChunkSize, strconv.Itoa(*chunkSize)},
-		{"chunk-overlap", knowledge.SettingChunkOverlap, strconv.Itoa(*chunkOverlap)},
-		{"strip-runes", knowledge.SettingStripRunes, *stripRunes},
-		{"type", knowledge.SettingType, *docType},
-		{"author", knowledge.SettingAuthor, *author},
+	pairs := []knowledge.SettingFlag{
+		{FlagName: "chunk-size", Key: knowledge.SettingChunkSize, Value: strconv.Itoa(*chunkSize)},
+		{FlagName: "chunk-overlap", Key: knowledge.SettingChunkOverlap, Value: strconv.Itoa(*chunkOverlap)},
+		{FlagName: "strip-runes", Key: knowledge.SettingStripRunes, Value: *stripRunes},
+		{FlagName: "type", Key: knowledge.SettingType, Value: *docType},
+		{FlagName: "author", Key: knowledge.SettingAuthor, Value: *author},
 	}
-	passed := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { passed[f.Name] = true })
-	changed := 0
-	for _, p := range pairs {
-		if passed[p.flag] {
-			if err := knowledge.SetSetting(db, p.key, p.val); err != nil {
-				fatalf("set %s: %v", p.key, err)
-			}
-			changed++
-		}
-	}
-
-	all, err := knowledge.AllSettings(db)
+	changed, err := knowledge.ApplySettingFlags(db, fs, pairs)
 	if err != nil {
-		fatalf("read settings: %v", err)
+		fatalf("%v", err)
 	}
-	if *jsonOut {
-		json.NewEncoder(os.Stdout).Encode(all)
-		return
-	}
-	if changed > 0 {
+	if !*jsonOut && changed > 0 {
 		fmt.Fprintf(os.Stderr, "updated %d setting(s)\n", changed)
 	}
-	if len(all) == 0 {
-		fmt.Fprintln(os.Stderr, "no corpus settings set (add uses built-in defaults)")
-		return
-	}
-	keys := make([]string, 0, len(all))
-	for k := range all {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	fmt.Fprintln(os.Stderr, "corpus settings:")
-	for _, k := range keys {
-		fmt.Printf("  %-16s %s\n", k, all[k])
+	if err := knowledge.PrintSettings(os.Stdout, db, *jsonOut); err != nil {
+		fatalf("read settings: %v", err)
 	}
 }
 
@@ -249,27 +223,8 @@ func runDigest(dbPath string, args []string) {
 		fatalf("digest: %v", err)
 	}
 
-	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(map[string]any{
-			"candidates": rep.Candidates, "skipped": rep.Skipped, "classified": rep.Classified,
-			"edges_written": rep.EdgesWritten, "errors": rep.Errors, "by_kind": rep.ByKind,
-		})
-		return
-	}
-	fmt.Printf("digest: %d candidates, %d skipped (clean), %d classified, %d edges written",
-		rep.Candidates, rep.Skipped, rep.Classified, rep.EdgesWritten)
-	if rep.Errors > 0 {
-		fmt.Printf(", %d errors", rep.Errors)
-	}
-	fmt.Println()
-	for _, kind := range digest.Kinds {
-		if n := rep.ByKind[kind]; n > 0 {
-			fmt.Printf("  %-12s %d\n", kind, n)
-		}
-	}
-	if rep.Candidates == 0 {
+	digest.PrintReport(os.Stdout, rep, *jsonOut)
+	if !*jsonOut && rep.Candidates == 0 {
 		fmt.Fprintln(os.Stderr, "note: no candidates — the kNN geometry is empty (ingest with --embed-model to store vectors)")
 	}
 }
@@ -284,19 +239,9 @@ func runGraph(dbPath string, args []string) {
 	limit := fs.Int("limit", 20, "max relations to show")
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	// Accept the slug as a bare positional in any position. Go's flag package
-	// stops parsing at the first non-flag token, so `graph SPEC-42 --json` would
-	// otherwise silently drop --json. Pull the first bare token out as the slug
-	// and flag-parse the remainder.
-	var positional string
-	rest := make([]string, 0, len(args))
-	for _, a := range args {
-		if positional == "" && a != "" && a[0] != '-' {
-			positional = a
-			continue
-		}
-		rest = append(rest, a)
-	}
+	// Accept the slug as a bare positional in any position — otherwise Go's
+	// flag package would silently drop --json on `graph SPEC-42 --json`.
+	positional, rest := cliutil.SplitPositionalFlag(args)
 	fs.Parse(rest)
 
 	target := *slug
@@ -317,27 +262,23 @@ func runGraph(dbPath string, args []string) {
 	}
 	defer db.Close()
 
-	doc, err := knowledge.DocByID(db, id)
-	if err != nil {
-		fatalf("load %s: %v", target, err)
-	}
-	edges, err := knowledge.TypedNeighbors(db, id, *limit)
+	doc, views, err := knowledge.RelationsView(db, id, *limit)
 	if err != nil {
 		fatalf("graph: %v", err)
 	}
 
 	if *jsonOut {
 		type rel struct {
-			Kind, Status, Target, Rationale, Model string
-			Confidence                             float64
+			Kind       string  `json:"kind"`
+			Status     string  `json:"status"`
+			Target     string  `json:"target"`
+			Rationale  string  `json:"rationale,omitempty"`
+			Model      string  `json:"model,omitempty"`
+			Confidence float64 `json:"confidence"`
 		}
-		rels := make([]rel, 0, len(edges))
-		for _, e := range edges {
-			dst, _ := knowledge.DocByID(db, e.Dst)
-			rels = append(rels, rel{
-				Kind: e.Kind, Status: e.Status, Target: dst.Slug(),
-				Rationale: e.Rationale, Model: e.Model, Confidence: e.Weight,
-			})
+		rels := make([]rel, len(views))
+		for i, v := range views {
+			rels[i] = rel{v.Kind, v.Status, v.TargetSlug, v.Rationale, v.Model, v.Confidence}
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -346,19 +287,18 @@ func runGraph(dbPath string, args []string) {
 	}
 
 	fmt.Printf("%s  %s\n", doc.Slug(), doc.Title)
-	if len(edges) == 0 {
+	if len(views) == 0 {
 		fmt.Println("  (no typed relations — run `distill digest --model <m>` to build the L2 graph)")
 		return
 	}
-	for _, e := range edges {
-		dst, err := knowledge.DocByID(db, e.Dst)
-		dstLabel := fmt.Sprintf("id-%d", e.Dst)
-		if err == nil {
-			dstLabel = fmt.Sprintf("%s %s", dst.Slug(), truncate(dst.Title, 40))
+	for _, v := range views {
+		dstLabel := v.TargetSlug
+		if v.TargetTitle != "" {
+			dstLabel += " " + cliutil.Truncate(v.TargetTitle, 40)
 		}
-		fmt.Printf("  → %-12s → %s  [%s, conf %.2f]\n", e.Kind, dstLabel, e.Status, e.Weight)
-		if e.Rationale != "" {
-			fmt.Printf("      %q\n", truncate(e.Rationale, 100))
+		fmt.Printf("  → %-12s → %s  [%s, conf %.2f]\n", v.Kind, dstLabel, v.Status, v.Confidence)
+		if v.Rationale != "" {
+			fmt.Printf("      %q\n", cliutil.Truncate(v.Rationale, 100))
 		}
 	}
 }
@@ -437,7 +377,7 @@ func runAdd(dbPath string, args []string) {
 		progress := func(done, queued int, pageURL string) {
 			fetched = done
 			if !*jsonOut {
-				fmt.Fprintf(os.Stderr, "\r  crawling [%d fetched, %d queued] %s", done, queued, truncate(pageURL, 60))
+				fmt.Fprintf(os.Stderr, "\r  crawling [%d fetched, %d queued] %s", done, queued, cliutil.Truncate(pageURL, 60))
 			}
 		}
 		chunks, err := knowledge.IngestWeb(*urlFlag, opts, progress)
@@ -750,24 +690,11 @@ func embedOne(ec *embed.Client, text string) []float32 {
 }
 
 func parseEmbedding(raw string) []float32 {
-	raw = strings.TrimSpace(strings.Trim(strings.TrimSpace(raw), "[]"))
-	if raw == "" {
-		return nil
+	emb, err := cliutil.ParseEmbedding(raw)
+	if err != nil {
+		fatalf("%v", err)
 	}
-	parts := strings.Split(raw, ",")
-	out := make([]float32, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		f, err := strconv.ParseFloat(p, 32)
-		if err != nil {
-			fatalf("invalid embedding value %q: %v", p, err)
-		}
-		out = append(out, float32(f))
-	}
-	return out
+	return emb
 }
 
 func printResults(results []knowledge.Result, asJSON bool) {
@@ -888,13 +815,6 @@ Auto-embedding: --embed-model <ollama-model> (e.g. qwen3-embedding:0.6b) embeds 
   time via --embed-url (default `+embed.DefaultURL+`); enables real vec/hybrid without hand-passing
   --embedding. Embed add and search with the SAME model. Degrades to FTS if the endpoint is down.
 `)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-3] + "..."
 }
 
 func fatalf(format string, args ...any) {
