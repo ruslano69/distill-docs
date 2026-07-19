@@ -222,6 +222,24 @@ func argBool(args map[string]any, key string) bool {
 	return v
 }
 
+// metaFromArgs materializes the document metadata blob from a tool's arg map —
+// the MCP counterpart to the CLI's registerRankFlags. Both ingest and record
+// read the same field set here; absent fields stay zero and metaJSON omits them,
+// so one binder serves both (record never sends role_tags/source_version;
+// ingest never sends source_ref). Adding a metadata field is a one-line edit.
+func metaFromArgs(args map[string]any) docMeta {
+	return docMeta{
+		Author:        argStr(args, "author", ""),
+		RoleTags:      argStr(args, "role_tags", ""),
+		SourceVersion: argStr(args, "source_version", ""),
+		SourceRef:     argStr(args, "source_ref", ""),
+		Topic:         argStr(args, "topic", ""),
+		Priority:      argFloat(args, "priority", 0),
+		Pinned:        argBool(args, "pinned"),
+		Supersedes:    argInt64(args, "supersedes", 0),
+	}
+}
+
 func argFloats(args map[string]any, key string) []float32 {
 	raw, ok := args[key].([]any)
 	if !ok {
@@ -475,12 +493,7 @@ func (m *mcpServer) toolIngest(args map[string]any) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	meta := metaJSON(docMeta{
-		Author: argStr(args, "author", ""), RoleTags: argStr(args, "role_tags", ""),
-		SourceVersion: argStr(args, "source_version", ""), Topic: argStr(args, "topic", ""),
-		Priority: argFloat(args, "priority", 0), Pinned: argBool(args, "pinned"),
-		Supersedes: argInt64(args, "supersedes", 0),
-	})
+	meta := metaJSON(metaFromArgs(args))
 	id, err := knowledge.Add(db, title, content, argStr(args, "type", "general"), meta, argFloats(args, "embedding"))
 	if err != nil {
 		return "", err
@@ -502,9 +515,7 @@ func (m *mcpServer) toolRecord(args map[string]any) (string, error) {
 	}
 	defer db.Close()
 	id, err := knowledge.Add(db, title, result, argStr(args, "type", "changelog"),
-		metaJSON(docMeta{Author: author, SourceRef: sourceRef, Topic: argStr(args, "topic", ""),
-			Priority: argFloat(args, "priority", 0), Pinned: argBool(args, "pinned"),
-			Supersedes: argInt64(args, "supersedes", 0)}), nil)
+		metaJSON(metaFromArgs(args)), nil)
 	if err != nil {
 		return "", err
 	}

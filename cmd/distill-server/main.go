@@ -317,6 +317,36 @@ func metaJSON(m docMeta) string {
 	return string(b)
 }
 
+// rankFlags binds the Stage-1 ranking/curation flags that every write command
+// (ingest, record) exposes identically. Registering them once — instead of
+// re-declaring the same four flags per command — means a new ranking signal is
+// added in one place, not copy-pasted (which is how priority/pinned/supersedes
+// first drifted). Command-specific provenance (author, role_tags, source_ref,
+// type) stays on the command, since its help text and semantics differ.
+type rankFlags struct {
+	topic      *string
+	priority   *float64
+	pinned     *bool
+	supersedes *int64
+}
+
+func registerRankFlags(fs *flag.FlagSet) *rankFlags {
+	return &rankFlags{
+		topic:      fs.String("topic", "", "topic facet (Stage-1 ranking)"),
+		priority:   fs.Float64("priority", 0, "numeric priority (Stage-1 ranking)"),
+		pinned:     fs.Bool("pinned", false, "mark as authoritative/pinned (ranking boost)"),
+		supersedes: fs.Int64("supersedes", 0, "id of a doc this one supersedes (drops the old one from results)"),
+	}
+}
+
+// apply folds the parsed ranking flags onto a docMeta (call after fs.Parse).
+func (r *rankFlags) apply(m *docMeta) {
+	m.Topic = *r.topic
+	m.Priority = *r.priority
+	m.Pinned = *r.pinned
+	m.Supersedes = *r.supersedes
+}
+
 // embedOrNil returns the vector for text when the embedder is enabled, or nil
 // (pure BYO/FTS) otherwise. Embedding failures degrade to nil with a warning
 // rather than aborting an ingest.
@@ -344,10 +374,7 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 	chunkSize := fs.Int("chunk-size", 800, "max chunk runes (with --file)")
 	chunkOverlap := fs.Int("chunk-overlap", 80, "chunk overlap runes (with --file)")
 	stripRunes := fs.String("strip-runes", "", "extra junk runes to strip at index time (e.g. an OCR separator glyph: --strip-runes Ω)")
-	topic := fs.String("topic", "", "topic facet for scoping (Stage-1 ranking)")
-	priority := fs.Float64("priority", 0, "numeric priority for rank-by-attribute (Stage-1 ranking)")
-	pinned := fs.Bool("pinned", false, "mark as authoritative/pinned (ranking boost)")
-	supersedes := fs.Int64("supersedes", 0, "id of a doc this one supersedes (drops the old one from results)")
+	rank := registerRankFlags(fs)
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -356,8 +383,9 @@ func runIngest(s *truth.Store, emb *embed.Client, args []string) {
 		fatalf("open write-log: %v", err)
 	}
 	defer db.Close()
-	meta := metaJSON(docMeta{Author: *author, RoleTags: *roleTags, SourceVersion: *sourceVersion,
-		Topic: *topic, Priority: *priority, Pinned: *pinned, Supersedes: *supersedes})
+	dm := docMeta{Author: *author, RoleTags: *roleTags, SourceVersion: *sourceVersion}
+	rank.apply(&dm)
+	meta := metaJSON(dm)
 
 	if *file != "" && strings.EqualFold(filepath.Ext(*file), ".json") {
 		records, err := knowledge.ParseRecordsFile(*file)
@@ -464,10 +492,7 @@ func runRecord(s *truth.Store, emb *embed.Client, args []string) {
 	docType := fs.String("type", "changelog", "changelog|task|decision")
 	sourceRef := fs.String("source-ref", "", "link to the source task/spec this answers")
 	author := fs.String("author", "", "who produced this result")
-	topic := fs.String("topic", "", "topic facet (Stage-1 ranking)")
-	priority := fs.Float64("priority", 0, "numeric priority (Stage-1 ranking)")
-	pinned := fs.Bool("pinned", false, "mark as authoritative/pinned")
-	supersedes := fs.Int64("supersedes", 0, "id of a doc this result supersedes")
+	rank := registerRankFlags(fs)
 	jsonOut := fs.Bool("json", false, "output JSON")
 	fs.Parse(args)
 
@@ -480,8 +505,9 @@ func runRecord(s *truth.Store, emb *embed.Client, args []string) {
 	}
 	defer db.Close()
 
-	meta := metaJSON(docMeta{Author: *author, SourceRef: *sourceRef,
-		Topic: *topic, Priority: *priority, Pinned: *pinned, Supersedes: *supersedes})
+	dm := docMeta{Author: *author, SourceRef: *sourceRef}
+	rank.apply(&dm)
+	meta := metaJSON(dm)
 	id, err := knowledge.Add(db, *title, *result, *docType, meta, embedOrNil(emb, *result))
 	if err != nil {
 		fatalf("record: %v", err)
