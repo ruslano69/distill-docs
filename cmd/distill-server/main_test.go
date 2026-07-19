@@ -3,27 +3,13 @@ package main
 import (
 	"testing"
 
+	"github.com/ruslano69/distill-docs/internal/docmeta"
 	"github.com/ruslano69/distill-docs/internal/knowledge"
 	"github.com/ruslano69/distill-docs/internal/truth"
 )
 
-// TestMetaJSON pins the provenance blob shape that ingest/record attach to docs.
-func TestMetaJSON(t *testing.T) {
-	got := metaJSON(docMeta{Author: "ruslan", RoleTags: "backend,api", SourceVersion: "v3"})
-	// json.Marshal of a map sorts keys, so this is stable.
-	want := `{"author":"ruslan","role_tags":"backend,api","source_version":"v3"}`
-	if got != want {
-		t.Fatalf("metaJSON = %s, want %s", got, want)
-	}
-	if empty := metaJSON(docMeta{}); empty != "{}" {
-		t.Fatalf("empty metaJSON = %s, want {}", empty)
-	}
-	// ranking signals: pinned serializes as 1, priority numeric, topic string.
-	full := metaJSON(docMeta{Topic: "auth", Priority: 0.5, Pinned: true, Supersedes: 7})
-	if full != `{"pinned":1,"priority":0.5,"supersedes":7,"topic":"auth"}` {
-		t.Fatalf("ranking metaJSON = %s", full)
-	}
-}
+// (Meta.JSON serialization is covered by internal/docmeta; here docmeta.Meta is
+// used only to seed the lifecycle fixtures below.)
 
 // TestParseEmbedding covers the BYO-embedding CLI parsing (bracketed + bare).
 func TestParseEmbedding(t *testing.T) {
@@ -54,13 +40,13 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("open write-log: %v", err)
 	}
 	id, err := knowledge.Add(wl, "Auth spec", "OAuth2 device flow", "spec",
-		metaJSON(docMeta{Author: "ruslan", RoleTags: "backend", SourceVersion: "v1"}), nil)
+		docmeta.Meta{Author: "ruslan", RoleTags: "backend", SourceVersion: "v1"}.JSON(), nil)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
 	// record with provenance
 	rid, err := knowledge.Add(wl, "Decision", "use WAL", "decision",
-		metaJSON(docMeta{Author: "ruslan", SourceRef: "spec:Auth"}), nil)
+		docmeta.Meta{Author: "ruslan", SourceRef: "spec:Auth"}.JSON(), nil)
 	if err != nil {
 		t.Fatalf("record add: %v", err)
 	}

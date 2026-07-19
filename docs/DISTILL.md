@@ -35,8 +35,8 @@ a fixed enum.
 
 ```
 distill [--db <path>] init
-distill [--db <path>] add    --title <t> --content <c> [--type <t>] [--meta <json>] [--embedding <floats>] [--json]
-distill [--db <path>] add    --file <path.txt|md|pdf>  [--type <t>] [--chunk-size N] [--chunk-overlap N] [--json]
+distill [--db <path>] add    --title <t> --content <c> [--type <t>] [--author --topic --priority --pinned --supersedes] [--meta <json>] [--embedding <floats>] [--json]
+distill [--db <path>] add    --file <path.txt|md|pdf>  [--type <t>] [--author --topic --priority --pinned --supersedes] [--chunk-size N] [--chunk-overlap N] [--json]
 distill [--db <path>] add    --session <transcript.jsonl> [--embed-model <m>] [--json]   (Claude Code session, per-turn, historical timestamps)
 distill [--db <path>] search --query <q>               [--embedding <floats>] [--mode fts|vec|hybrid|regex] [--metric cosine|l2] [--filter-type <type>] [--limit N] [--json]
 distill [--db <path>] count  [--json]
@@ -60,12 +60,19 @@ call every time a script starts.
 ```bash
 distill add --title "Go error handling" \
   --content "Errors are values. Use errors.Is/errors.As to check types." \
-  --type tool_usage --meta '{"source":"manual"}' --json
+  --type tool_usage --topic go --pinned --author ruslan --json
 # {"id":1}
 ```
 
 `--title` and `--content` are required unless `--file` is used. `--embedding`
 accepts comma-separated floats, optionally wrapped in `[...]`.
+
+**Metadata flags** (shared with `distill-server` via `internal/docmeta`):
+`--author`, `--topic`, `--priority`, `--pinned`, `--supersedes` set the
+provenance/ranking fields the `search` ranking layer reads. `--meta '{...}'`
+remains a raw escape hatch for arbitrary keys; the structured flags overlay it,
+so `--meta '{"source":"manual"}' --topic go` composes into
+`{"source":"manual","topic":"go"}`.
 
 ### add — file ingestion (chunked)
 
